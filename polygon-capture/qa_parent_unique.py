@@ -5,22 +5,44 @@ from pathlib import Path
 
 import geopandas as gpd
 
+from _core.config import add_config_argument, get_config_section_from_argv, require_configured
 from _core.io import load_layer
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build QA review layers for parent unique capture output.")
-    parser.add_argument("--capture-gpkg", required=True)
-    parser.add_argument("--capture-layer", default=None)
-    parser.add_argument("--point-gpkg", required=True)
-    parser.add_argument("--point-layer", default=None)
-    parser.add_argument("--raw-wfs-gpkg", required=True)
-    parser.add_argument("--output-gpkg", required=True)
-    parser.add_argument("--output-csv", required=True)
-    parser.add_argument("--road-anchor-distance", type=float, default=7.5)
-    parser.add_argument("--large-area", type=float, default=50000.0)
-    parser.add_argument("--linked-parent-distance", type=float, default=15.0)
-    return parser.parse_args()
+    config_defaults, _ = get_config_section_from_argv("qa_parent_unique", include_package_defaults=True)
+    parser = argparse.ArgumentParser(
+        description="Build QA review layers for parent unique capture output.",
+        argument_default=argparse.SUPPRESS,
+    )
+    add_config_argument(parser)
+    parser.add_argument("--capture-gpkg")
+    parser.add_argument("--capture-layer")
+    parser.add_argument("--point-gpkg")
+    parser.add_argument("--point-layer")
+    parser.add_argument("--raw-wfs-gpkg")
+    parser.add_argument("--output-gpkg")
+    parser.add_argument("--output-csv")
+    parser.add_argument("--output-polygons-layer")
+    parser.add_argument("--output-points-layer")
+    parser.add_argument("--road-anchor-distance", type=float)
+    parser.add_argument("--large-area", type=float)
+    parser.add_argument("--linked-parent-distance", type=float)
+    parser.add_argument("--multipart-threshold", type=int)
+    parser.add_argument("--low-compactness", type=float)
+    parser.add_argument("--min-low-compactness-area", type=float)
+    parser.set_defaults(**config_defaults)
+    args = parser.parse_args()
+    require_configured(
+        args,
+        ("capture_gpkg", "point_gpkg", "raw_wfs_gpkg", "output_gpkg", "output_csv"),
+        "qa_parent_unique",
+    )
+    return args
+
+
+def _threshold_label(value: float) -> str:
+    return f"{float(value):g}".replace(".", "p")
 
 
 def _parts(geom) -> int:
@@ -90,16 +112,19 @@ def main() -> None:
         qa_base["point_output_dist_m"] > float(args.linked_parent_distance)
     )
     large_area = qa_base["area_m2"] > float(args.large_area)
-    multipart = qa_base["parts"] >= 4
-    low_compactness = (qa_base["compactness"] < 0.03) & (qa_base["area_m2"] > 1000.0)
+    multipart = qa_base["parts"] >= int(args.multipart_threshold)
+    low_compactness = (
+        (qa_base["compactness"] < float(args.low_compactness))
+        & (qa_base["area_m2"] > float(args.min_low_compactness_area))
+    )
     failed = ~qa_base["capture_success"].fillna(False).astype(bool)
 
     masks = [
-        ("road_anchor_point_on_noneligible_wfs_gt7p5m", road_anchor),
-        ("linked_parent_union_point_dist_gt15m", linked_far),
-        ("large_area_gt50000m2", large_area),
-        ("multipart_ge4", multipart),
-        ("low_compactness_gt1000m2", low_compactness),
+        (f"road_anchor_point_on_noneligible_wfs_gt{_threshold_label(args.road_anchor_distance)}m", road_anchor),
+        (f"linked_parent_union_point_dist_gt{_threshold_label(args.linked_parent_distance)}m", linked_far),
+        (f"large_area_gt{_threshold_label(args.large_area)}m2", large_area),
+        (f"multipart_ge{int(args.multipart_threshold)}", multipart),
+        (f"low_compactness_gt{_threshold_label(args.min_low_compactness_area)}m2", low_compactness),
         ("capture_failed", failed),
     ]
 
@@ -124,7 +149,7 @@ def main() -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if out_path.exists():
         out_path.unlink()
-    qa.drop(columns=["point_geom"]).to_file(out_path, layer="qa_polygons", driver="GPKG")
+    qa.drop(columns=["point_geom"]).to_file(out_path, layer=args.output_polygons_layer, driver="GPKG")
 
     qa_points = points[points["capture_src_id"].isin(qa["capture_src_id"])].merge(
         qa.drop(columns=["geometry", "point_geom"]),
@@ -132,7 +157,7 @@ def main() -> None:
         how="left",
         suffixes=("", "_capture"),
     )
-    qa_points.to_file(out_path, layer="qa_points", driver="GPKG")
+    qa_points.to_file(out_path, layer=args.output_points_layer, driver="GPKG")
 
     csv_path = Path(args.output_csv)
     csv_path.parent.mkdir(parents=True, exist_ok=True)

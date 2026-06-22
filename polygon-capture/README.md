@@ -23,9 +23,14 @@ The `_core/` package holds shared implementation modules used by the public scri
 - `_core/centroid_combo.py`
 - `_core/polygonize_combo.py`
 
-The command-line inputs, outputs, defaults, and layer names are intentionally unchanged.
-Run scripts the same way as before, for example:
+Path-like inputs and outputs should be supplied by config or command line, not by editing script defaults.
+Shared defaults for layers, thresholds, and feature switches live in `_core/defaults.json`.
+See `../CONFIG.md` and `../config.example.json`.
+
+Run scripts with a config file, for example:
 
 ```bash
-python3 polygon-capture/capture.py --target-gpkg input.gpkg --output-gpkg capture_result.gpkg
+python3 polygon-capture/capture.py --config config.local.json
 ```
+
+Individual CLI flags still override config values when needed.

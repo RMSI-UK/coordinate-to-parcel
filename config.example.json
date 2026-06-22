@@ -1,0 +1,71 @@
+{
+  "capture": {
+    "target_gpkg": "/path/to/input_points_or_polygons.gpkg",
+    "target_layer": "features",
+    "council_land_gpkg": "/path/to/council_land.gpkg",
+    "os_wfs_gpkg": "/path/to/os_wfs_raw.gpkg",
+    "os_wfs_merge_gpkg": "/path/to/os_wfs_merge.gpkg",
+    "output_gpkg": "/path/to/capture_result.gpkg",
+    "output_layer": "capture_result",
+    "wfs_theme_include": "building,land"
+  },
+  "point_surrounding": {
+    "input": "/path/to/location_points.gpkg",
+    "keys_file": "/path/to/local_keys.md",
+    "output_dir": "/path/to/base-map",
+    "coverage_layer": "features",
+    "radius": 20.0,
+    "coverage_buffer_radius": 20.0,
+    "coverage_min_ratio": 0.995,
+    "coverage_gap_min_area": 1.0
+  },
+  "spatial_qa": {
+    "address_csv": "/path/to/address_result.csv",
+    "qa_gpkg": "/path/to/qa_polygons.gpkg",
+    "qa_layer": "features",
+    "output_csv": "/path/to/spatial_qa.csv",
+    "output_gpkg": "/path/to/spatial_qa.gpkg"
+  },
+  "postprocess_existing_wfs_theme": {
+    "input_gpkg": "/path/to/capture_result.gpkg",
+    "point_gpkg": "/path/to/input_points.gpkg",
+    "os_wfs_gpkg": "/path/to/os_wfs_raw.gpkg",
+    "os_wfs_merge_gpkg": "/path/to/os_wfs_merge.gpkg",
+    "output_gpkg": "/path/to/capture_result_postprocessed.gpkg"
+  },
+  "aggregate_unique_key": {
+    "input_gpkg": "/path/to/capture_result.gpkg",
+    "output_gpkg": "/path/to/capture_result_parent_unique.gpkg"
+  },
+  "qa_parent_unique": {
+    "capture_gpkg": "/path/to/capture_result_parent_unique.gpkg",
+    "point_gpkg": "/path/to/input_points.gpkg",
+    "raw_wfs_gpkg": "/path/to/os_wfs_raw.gpkg",
+    "output_gpkg": "/path/to/parent_unique_qa_review.gpkg",
+    "output_csv": "/path/to/parent_unique_qa_review.csv",
+    "output_polygons_layer": "qa_polygons",
+    "output_points_layer": "qa_points"
+  },
+  "qa_weird_shapes": {
+    "capture_gpkg": "/path/to/capture_result_parent_unique.gpkg",
+    "output_gpkg": "/path/to/weird_shapes.gpkg",
+    "output_layer": "weird_shape_polygons",
+    "output_csv": "/path/to/weird_shapes.csv"
+  },
+  "annotate_weird_shape_manual_qa": {
+    "input_gpkg": "/path/to/weird_shapes.gpkg",
+    "output_gpkg": "/path/to/weird_shapes_manual_qa.gpkg",
+    "output_csv": "/path/to/weird_shapes_manual_qa.csv"
+  },
+  "build_final_parent_table": {
+    "capture_gpkg": "/path/to/capture_result_parent_unique.gpkg",
+    "source_xlsx": "/path/to/source_workbook.xlsx",
+    "qa_gpkg": "/path/to/parent_unique_qa_review.gpkg",
+    "weird_gpkg": "/path/to/weird_shapes_manual_qa.gpkg",
+    "point_gpkg": "/path/to/input_points.gpkg",
+    "output_gpkg": "/path/to/final_table.gpkg",
+    "output_xlsx": "/path/to/final_table.xlsx",
+    "output_csv": "/path/to/final_table.csv",
+    "missing_xlsx": "/path/to/missing_from_capture.xlsx"
+  }
+}

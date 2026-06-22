@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 import re
 
@@ -7,21 +8,7 @@ import geopandas as gpd
 import pandas as pd
 from shapely.geometry import Point, Polygon
 
-
-CAPTURE_GPKG = "output/sheffield_capture_building_land_fast_v3_parent_unique.gpkg"
-CAPTURE_LAYER = "capture_result"
-QA_GPKG = "output/sheffield_parent_unique_qa_review.gpkg"
-QA_LAYER = "qa_polygons"
-WEIRD_GPKG = "output/sheffield_parent_unique_weird_shapes_manual_qa.gpkg"
-WEIRD_LAYER = "weird_shape_manual_qa"
-SOURCE_XLSX = "/data/sheffield/spatial/Sheffield_WP4.xlsx"
-POINT_GPKG = "output/sheffield_wp4_point.gpkg"
-POINT_LAYER = "Sheffield"
-
-OUT_GPKG = Path("output/sheffield_parent_unique_final_table.gpkg")
-OUT_XLSX = Path("output/sheffield_parent_unique_final_table.xlsx")
-OUT_CSV = Path("output/sheffield_parent_unique_final_table.csv")
-OUT_MISSING_XLSX = Path("output/sheffield_wp4_missing_from_parent_unique_capture.xlsx")
+from _core.config import add_config_argument, get_config_section_from_argv, require_configured
 
 
 SEVERE_WEIRD_LABELS = {
@@ -122,11 +109,47 @@ STREET_PREFIX_EXCLUDE = {
 SPECIFIC_SINGLE_STREET_WORDS = {"gate", "green", "grove", "hill", "mount", "row", "square", "view", "walk"}
 
 
+def parse_args() -> argparse.Namespace:
+    config_defaults, _ = get_config_section_from_argv(
+        "build_final_parent_table",
+        include_package_defaults=True,
+    )
+    parser = argparse.ArgumentParser(
+        description="Assemble the final parent-unique delivery table.",
+        argument_default=argparse.SUPPRESS,
+    )
+    add_config_argument(parser)
+    parser.add_argument("--capture-gpkg")
+    parser.add_argument("--capture-layer")
+    parser.add_argument("--source-xlsx")
+    parser.add_argument("--qa-gpkg")
+    parser.add_argument("--qa-layer")
+    parser.add_argument("--weird-gpkg")
+    parser.add_argument("--weird-layer")
+    parser.add_argument("--point-gpkg")
+    parser.add_argument("--point-layer")
+    parser.add_argument("--output-gpkg")
+    parser.add_argument("--output-layer")
+    parser.add_argument("--output-xlsx")
+    parser.add_argument("--output-csv")
+    parser.add_argument("--missing-xlsx")
+    parser.set_defaults(**config_defaults)
+    args = parser.parse_args()
+    require_configured(
+        args,
+        ("capture_gpkg", "source_xlsx", "output_gpkg", "output_xlsx", "output_csv", "missing_xlsx"),
+        "build_final_parent_table",
+    )
+    return args
+
+
 def _lower_confidence(current: str, candidate: str) -> str:
     return current if CONFIDENCE_ORDER[current] <= CONFIDENCE_ORDER[candidate] else candidate
 
 
-def _read_optional_gpkg(path: str, layer: str, cols: list[str]) -> pd.DataFrame:
+def _read_optional_gpkg(path: str | None, layer: str | None, cols: list[str]) -> pd.DataFrame:
+    if not path:
+        return pd.DataFrame(columns=["unique_key", *cols])
     p = Path(path)
     if not p.exists():
         return pd.DataFrame(columns=["unique_key", *cols])
@@ -160,11 +183,13 @@ def _point_from_row(row):
     return None
 
 
-def _load_point_lookup() -> dict[str, Point]:
-    p = Path(POINT_GPKG)
+def _load_point_lookup(point_gpkg: str | None, point_layer: str | None) -> dict[str, Point]:
+    if not point_gpkg:
+        return {}
+    p = Path(point_gpkg)
     if not p.exists():
         return {}
-    points = gpd.read_file(POINT_GPKG, layer=POINT_LAYER)
+    points = gpd.read_file(point_gpkg, layer=point_layer)
     points = points[points.geometry.notna() & ~points.geometry.is_empty].copy()
     parent = points[points["variant_key"].astype(str).eq(points["unique_key"].astype(str))].drop_duplicates("unique_key")
     first = points.drop_duplicates("unique_key")
@@ -219,8 +244,13 @@ def _clean_single_geometry(row, point_lookup: dict[str, Point]):
     return cleaned, method, parts_before, holes_before, 1, point_intersects_selected, selected_distance
 
 
-def _clean_output_geometries(out: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-    point_lookup = _load_point_lookup()
+def _clean_output_geometries(
+    out: gpd.GeoDataFrame,
+    *,
+    point_gpkg: str | None,
+    point_layer: str | None,
+) -> gpd.GeoDataFrame:
+    point_lookup = _load_point_lookup(point_gpkg, point_layer)
     cleaned_rows = out.apply(
         lambda row: _clean_single_geometry(row, point_lookup),
         axis=1,
@@ -435,20 +465,21 @@ def _confidence_and_notes(row) -> tuple[str, str]:
 
 
 def main() -> None:
-    capture = gpd.read_file(CAPTURE_GPKG, layer=CAPTURE_LAYER)
-    excel = pd.read_excel(SOURCE_XLSX)
+    args = parse_args()
+    capture = gpd.read_file(args.capture_gpkg, layer=args.capture_layer)
+    excel = pd.read_excel(args.source_xlsx)
     excel = excel.copy()
     excel["oachargeid"] = excel["originating-authority-charge-identifier"].astype("Int64")
     excel_join = excel[["oachargeid"]].drop_duplicates("oachargeid")
 
     qa = _read_optional_gpkg(
-        QA_GPKG,
-        QA_LAYER,
+        args.qa_gpkg,
+        args.qa_layer,
         ["qa_reason", "qa_priority", "point_output_dist_m", "Theme", "underlying_wfs_dist_m", "area_m2", "parts", "compactness"],
     )
     weird = _read_optional_gpkg(
-        WEIRD_GPKG,
-        WEIRD_LAYER,
+        args.weird_gpkg,
+        args.weird_layer,
         [
             "shape_qa_flags",
             "shape_qa_priority",
@@ -512,8 +543,8 @@ def main() -> None:
             record["original_address"] = address
             record["auto_polygon_confidence"] = "missing_input"
             record["auto_polygon_notes"] = (
-                "No polygon generated because this oachargeid exists in Sheffield_WP4.xlsx "
-                "but is missing from sheffield_wp4_point.csv/sheffield_wp4_point.gpkg input."
+                "No polygon generated because this oachargeid exists in the source workbook "
+                "but is missing from the configured point input."
             )
             record["capture_success"] = False
             record["capture_stage"] = "missing_from_point_input"
@@ -537,7 +568,7 @@ def main() -> None:
         )
         out = out.sort_values("oachargeid").reset_index(drop=True)
 
-    out = _clean_output_geometries(out)
+    out = _clean_output_geometries(out, point_gpkg=args.point_gpkg, point_layer=args.point_layer)
     no_intersection_mask = out["geometry_clean_method"].astype(str).str.contains(
         GEOMETRY_CLEAN_NEAREST_NO_INTERSECTION,
         regex=False,
@@ -559,20 +590,29 @@ def main() -> None:
             + " Confidence lowered to medium because multipart selection used nearest part rather than a point-intersecting part."
         )
 
-    if OUT_GPKG.exists():
-        OUT_GPKG.unlink()
-    out.to_file(OUT_GPKG, layer="capture_result", driver="GPKG")
+    output_gpkg = Path(args.output_gpkg)
+    output_xlsx = Path(args.output_xlsx)
+    output_csv = Path(args.output_csv)
+    missing_xlsx = Path(args.missing_xlsx)
+    output_gpkg.parent.mkdir(parents=True, exist_ok=True)
+    output_xlsx.parent.mkdir(parents=True, exist_ok=True)
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+    missing_xlsx.parent.mkdir(parents=True, exist_ok=True)
+
+    if output_gpkg.exists():
+        output_gpkg.unlink()
+    out.to_file(output_gpkg, layer=args.output_layer, driver="GPKG")
 
     attr = pd.DataFrame(out.drop(columns=out.geometry.name))
-    attr.to_csv(OUT_CSV, index=False)
-    attr.to_excel(OUT_XLSX, index=False)
+    attr.to_csv(output_csv, index=False)
+    attr.to_excel(output_xlsx, index=False)
 
-    missing.to_excel(OUT_MISSING_XLSX, index=False)
+    missing.to_excel(missing_xlsx, index=False)
 
-    print(f"[DONE] Wrote spatial final table: {OUT_GPKG}")
-    print(f"[DONE] Wrote attribute XLSX: {OUT_XLSX}")
-    print(f"[DONE] Wrote attribute CSV: {OUT_CSV}")
-    print(f"[DONE] Wrote Excel rows missing from capture: {OUT_MISSING_XLSX}")
+    print(f"[DONE] Wrote spatial final table: {output_gpkg}")
+    print(f"[DONE] Wrote attribute XLSX: {output_xlsx}")
+    print(f"[DONE] Wrote attribute CSV: {output_csv}")
+    print(f"[DONE] Wrote Excel rows missing from capture: {missing_xlsx}")
     print(f"[INFO] Output rows: {len(out)}")
     print(f"[INFO] oachargeid populated: {int(out['oachargeid'].notna().sum())}/{len(out)}")
     print("[INFO] auto_polygon_confidence counts:")

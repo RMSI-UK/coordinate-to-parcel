@@ -6,21 +6,30 @@ from pathlib import Path
 import geopandas as gpd
 from shapely.ops import unary_union
 
+from _core.config import add_config_argument, get_config_section_from_argv, require_configured
 from _core.io import load_layer
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Collapse capture output to one parent record per unique_key.")
-    parser.add_argument("--input-gpkg", required=True)
-    parser.add_argument("--input-layer", default=None)
-    parser.add_argument("--output-gpkg", required=True)
-    parser.add_argument("--output-layer", default="capture_result")
+    config_defaults, _ = get_config_section_from_argv("aggregate_unique_key", include_package_defaults=True)
+    parser = argparse.ArgumentParser(
+        description="Collapse capture output to one parent record per unique_key.",
+        argument_default=argparse.SUPPRESS,
+    )
+    add_config_argument(parser)
+    parser.add_argument("--input-gpkg")
+    parser.add_argument("--input-layer")
+    parser.add_argument("--output-gpkg")
+    parser.add_argument("--output-layer")
     parser.add_argument(
         "--union-children-when-parent-missing-or-failed",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         help="If a multi-record group has no successful parent row, use successful child geometry union.",
     )
-    return parser.parse_args()
+    parser.set_defaults(**config_defaults)
+    args = parser.parse_args()
+    require_configured(args, ("input_gpkg", "output_gpkg"), "aggregate_unique_key")
+    return args
 
 
 def _is_success(row) -> bool:

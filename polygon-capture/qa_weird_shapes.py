@@ -5,23 +5,33 @@ from pathlib import Path
 
 import geopandas as gpd
 
+from _core.config import add_config_argument, get_config_section_from_argv, require_configured
 from _core.io import load_layer
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Flag unusual polygon shapes for manual QA.")
-    parser.add_argument("--capture-gpkg", required=True)
-    parser.add_argument("--capture-layer", default=None)
-    parser.add_argument("--output-gpkg", required=True)
-    parser.add_argument("--output-csv", required=True)
-    parser.add_argument("--large-area", type=float, default=50000.0)
-    parser.add_argument("--huge-area", type=float, default=85000.0)
-    parser.add_argument("--max-aspect", type=float, default=20.0)
-    parser.add_argument("--low-compactness", type=float, default=0.03)
-    parser.add_argument("--min-low-compactness-area", type=float, default=1000.0)
-    parser.add_argument("--multipart-threshold", type=int, default=4)
-    parser.add_argument("--hole-threshold", type=int, default=8)
-    return parser.parse_args()
+    config_defaults, _ = get_config_section_from_argv("qa_weird_shapes", include_package_defaults=True)
+    parser = argparse.ArgumentParser(
+        description="Flag unusual polygon shapes for manual QA.",
+        argument_default=argparse.SUPPRESS,
+    )
+    add_config_argument(parser)
+    parser.add_argument("--capture-gpkg")
+    parser.add_argument("--capture-layer")
+    parser.add_argument("--output-gpkg")
+    parser.add_argument("--output-layer")
+    parser.add_argument("--output-csv")
+    parser.add_argument("--large-area", type=float)
+    parser.add_argument("--huge-area", type=float)
+    parser.add_argument("--max-aspect", type=float)
+    parser.add_argument("--low-compactness", type=float)
+    parser.add_argument("--min-low-compactness-area", type=float)
+    parser.add_argument("--multipart-threshold", type=int)
+    parser.add_argument("--hole-threshold", type=int)
+    parser.set_defaults(**config_defaults)
+    args = parser.parse_args()
+    require_configured(args, ("capture_gpkg", "output_gpkg", "output_csv"), "qa_weird_shapes")
+    return args
 
 
 def _parts(geom) -> int:
@@ -114,7 +124,7 @@ def main() -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if out_path.exists():
         out_path.unlink()
-    review.to_file(out_path, layer="weird_shape_polygons", driver="GPKG")
+    review.to_file(out_path, layer=args.output_layer, driver="GPKG")
 
     csv_path = Path(args.output_csv)
     csv_path.parent.mkdir(parents=True, exist_ok=True)

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 import geopandas as gpd
+
+from _core.config import add_config_argument, get_config_section_from_argv, require_configured
 
 
 LABELS = {
@@ -64,6 +67,31 @@ LIKELY_TERMS = [
 ]
 
 
+def parse_args() -> argparse.Namespace:
+    config_defaults, _ = get_config_section_from_argv(
+        "annotate_weird_shape_manual_qa",
+        include_package_defaults=True,
+    )
+    parser = argparse.ArgumentParser(
+        description="Annotate weird-shape QA rows with manual labels.",
+        argument_default=argparse.SUPPRESS,
+    )
+    add_config_argument(parser)
+    parser.add_argument("--input-gpkg")
+    parser.add_argument("--input-layer")
+    parser.add_argument("--output-gpkg")
+    parser.add_argument("--output-layer")
+    parser.add_argument("--output-csv")
+    parser.set_defaults(**config_defaults)
+    args = parser.parse_args()
+    require_configured(
+        args,
+        ("input_gpkg", "output_gpkg", "output_csv"),
+        "annotate_weird_shape_manual_qa",
+    )
+    return args
+
+
 def classify(row) -> tuple[str, str]:
     unique_key = int(row["unique_key"])
     if unique_key in LABELS:
@@ -97,17 +125,20 @@ def classify(row) -> tuple[str, str]:
 
 
 def main() -> None:
-    q = gpd.read_file("output/sheffield_parent_unique_weird_shapes.gpkg", layer="weird_shape_polygons")
+    args = parse_args()
+    q = gpd.read_file(args.input_gpkg, layer=args.input_layer)
     labels = q.apply(classify, axis=1, result_type="expand")
     labels.columns = ["manual_shape_qa_label", "manual_shape_qa_note"]
     q[["manual_shape_qa_label", "manual_shape_qa_note"]] = labels
 
-    out = Path("output/sheffield_parent_unique_weird_shapes_manual_qa.gpkg")
+    out = Path(args.output_gpkg)
+    out.parent.mkdir(parents=True, exist_ok=True)
     if out.exists():
         out.unlink()
-    q.to_file(out, layer="weird_shape_manual_qa", driver="GPKG")
+    q.to_file(out, layer=args.output_layer, driver="GPKG")
 
-    csv = Path("output/sheffield_parent_unique_weird_shapes_manual_qa.csv")
+    csv = Path(args.output_csv)
+    csv.parent.mkdir(parents=True, exist_ok=True)
     q.drop(columns="geometry").to_csv(csv, index=False)
 
     print(f"[DONE] Wrote {out}")

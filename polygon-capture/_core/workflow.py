@@ -21,340 +21,133 @@ from _core.io import (
     pick_smallest_intersection_polygon,
     representative_points,
 )
+from _core.config import add_config_argument, get_config_section_from_argv, require_configured
 from _core.wfs_merge import build_wfs_merge_gdf, filter_wfs_theme_features, resolve_theme_field
 from shapely import set_precision
 from shapely.affinity import translate
-from shapely.geometry import GeometryCollection, MultiPolygon, Polygon
-from shapely.ops import transform, unary_union
+from shapely.geometry import GeometryCollection, LineString, MultiPolygon, Polygon
+from shapely.ops import nearest_points, transform, unary_union
 from shapely.validation import make_valid
 from shapely.wkb import dumps as wkb_dumps, loads as wkb_loads
 
 
-DEFAULT_TARGET_GPKG = "/data/monmouthshire/spatial/address/monmouthshire_input_layer.gpkg"
-DEFAULT_TARGET_LAYER = "features"
-DEFAULT_COUNCIL_LAND_GPKG = "/data/monmouthshire/spatial/base-map/monmouthshire_council_land.gpkg"
-DEFAULT_OS_WFS_GPKG = "/data/monmouthshire/spatial/base-map/monmouthshire_os_wfs_merge.gpkg"
-DEFAULT_OS_WFS_MERGE_GPKG = "/data/monmouthshire/spatial/base-map/monmouthshire_os_wfs_merge.gpkg"
-DEFAULT_OUTPUT_GPKG = "/data/monmouthshire/spatial/base-map/monmouthshire_capture_result.gpkg"
-DEFAULT_OUTPUT_LAYER = "capture_result"
-
-
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Inline capture workflow (no external merge_demo6 dependency).")
-    parser.add_argument("--target-gpkg", default=DEFAULT_TARGET_GPKG, help="Target input GPKG.")
-    parser.add_argument("--target-layer", default=DEFAULT_TARGET_LAYER, help="Target layer name.")
-    parser.add_argument("--council-land-gpkg", default=DEFAULT_COUNCIL_LAND_GPKG, help="Council land GPKG.")
-    parser.add_argument("--os-wfs-gpkg", default=DEFAULT_OS_WFS_GPKG, help="OS WFS GPKG for inline merge basemap.")
-    parser.add_argument(
-        "--os-wfs-merge-gpkg",
-        default=DEFAULT_OS_WFS_MERGE_GPKG,
-        help="Optional pre-merged OS WFS GPKG. If omitted, it is built inline from --os-wfs-gpkg.",
+    config_defaults, _ = get_config_section_from_argv("capture", include_package_defaults=True)
+    parser = argparse.ArgumentParser(
+        description="Inline capture workflow (no external merge_demo6 dependency).",
+        argument_default=argparse.SUPPRESS,
     )
-    parser.add_argument(
-        "--save-built-os-wfs-merge",
-        default=None,
-        help="Optional path to save inline-built os_wfs_merge GPKG cache.",
+    add_config_argument(parser)
+
+    string_options = (
+        "target-gpkg",
+        "target-layer",
+        "council-land-gpkg",
+        "os-wfs-gpkg",
+        "os-wfs-merge-gpkg",
+        "save-built-os-wfs-merge",
+        "save-built-os-wfs-merge-layer",
+        "output-gpkg",
+        "output-layer",
+        "wfs-theme-include",
     )
-    parser.add_argument("--output-gpkg", default=DEFAULT_OUTPUT_GPKG, help="Output GPKG path.")
-    parser.add_argument("--output-layer", default=DEFAULT_OUTPUT_LAYER, help="Output layer name.")
-    parser.add_argument("--distance-tolerance", type=float, default=0.2, help="Distance tolerance in meters.")
-    parser.add_argument("--area-tolerance", type=float, default=0.30, help="Area tolerance ratio.")
-    parser.add_argument("--min-iou", type=float, default=0.65, help="Minimum IoU to accept merged polygon.")
-    parser.add_argument("--window-area-scale", type=float, default=2.5, help="Search window area scale around input.")
-    parser.add_argument("--max-candidates", type=int, default=12, help="Max candidate polygons per input.")
-    parser.add_argument("--max-combo-size", type=int, default=3, help="Max polygon combination size.")
-    parser.add_argument(
-        "--point-centroid-tolerance",
-        type=float,
-        default=1e-6,
-        help="Accept a point capture candidate immediately when the candidate centroid is within this distance.",
+    float_options = (
+        "distance-tolerance",
+        "area-tolerance",
+        "min-iou",
+        "window-area-scale",
+        "point-centroid-tolerance",
+        "point-combo-search-radius",
+        "point-combo-max-area",
+        "point-merge-combo-search-radius",
+        "point-nearest-wfs-max-distance",
+        "fallback-min-area",
+        "fallback-max-aspect-ratio",
+        "fallback-min-compactness",
+        "point-contained-union-max-container-area",
+        "council-driven-wfs-min-iou",
+        "council-driven-wfs-min-seed-coverage",
+        "council-driven-wfs-min-wfs-coverage",
+        "council-driven-wfs-min-area-ratio",
+        "council-driven-wfs-max-seed-area",
+        "council-driven-wfs-max-candidate-seed-area-ratio",
+        "council-driven-wfs-max-candidate-area-extra",
+        "late-council-driven-wfs-min-iou",
+        "late-council-driven-wfs-min-coverage",
+        "late-council-driven-wfs-min-area-ratio",
+        "late-council-driven-wfs-max-current-seed-iou",
+        "late-council-driven-wfs-max-seed-area",
+        "point-polygonize-search-radius",
+        "point-polygonize-snap-refine-tolerance",
+        "point-polygonize-snap-refine-grid",
+        "point-polygonize-snap-refine-max-existing-symdiff",
+        "point-polygonized-precision-model-grid",
+        "point-polygonized-precision-model-tolerance",
+        "point-polygonized-precision-model-max-existing-symdiff",
+        "step2-output-precision-grid",
+        "step3-intersection-output-precision-grid",
+        "point-source-centroid-refine-grid",
+        "point-source-centroid-refine-tolerance",
+        "point-source-centroid-refine-max-area",
+        "point-chargegeog-template-max-area",
+        "council-seed-wfs-repair-search-radius",
+        "council-seed-wfs-repair-min-cell-reference-coverage",
+        "council-seed-wfs-repair-min-reference-iou",
+        "council-seed-wfs-repair-centroid-tolerance",
+        "council-seed-wfs-repair-centroid-improvement",
+        "reference-qa-min-seed-area",
+        "reference-qa-max-seed-area",
+        "reference-qa-trim-max-seed-area",
+        "reference-qa-trim-min-seed-coverage",
+        "reference-qa-trim-min-current-coverage",
+        "reference-qa-trim-min-outside-area",
+        "reference-qa-trim-max-missing-ratio",
+        "reference-qa-completion-min-seed-coverage",
+        "reference-qa-completion-min-coverage-gain",
+        "reference-qa-completion-min-area-ratio",
+        "reference-qa-raw-union-max-outside-area",
+        "single-polygon-bridge-width",
+        "final-output-precision-grid",
     )
-    parser.add_argument("--point-combo-search-radius", type=float, default=45.0, help="Search radius for point-centroid WFS combinations.")
-    parser.add_argument("--point-combo-max-candidates", type=int, default=24, help="Max WFS candidates for point-centroid combinations.")
-    parser.add_argument(
-        "--enable-slow-point-recovery",
-        action="store_true",
-        help=(
-            "Enable all slow pre-Step1 point recovery passes. Disabled by default because "
-            "Sheffield production runs showed these passes resolving 0 records while adding substantial runtime."
-        ),
+    int_options = (
+        "max-candidates",
+        "max-combo-size",
+        "point-combo-max-candidates",
+        "point-deep-combo-max-candidates",
+        "point-polygonize-max-candidates",
+        "council-seed-wfs-repair-max-cells",
+        "reference-qa-completion-max-pieces",
     )
-    parser.add_argument(
-        "--enable-point-wfs-combo",
-        action="store_true",
-        help="Enable slow point-centroid raw WFS combination recovery.",
+    bool_options = (
+        "enable-slow-point-recovery",
+        "enable-point-wfs-combo",
+        "enable-point-deep-combo",
+        "enable-point-merged-combo",
+        "enable-point-contained-union",
+        "enable-point-polygonized-combo",
+        "enable-point-combined-polygonized-combo",
+        "disable-reference-constrained-wfs-qa",
+        "disable-point-chargegeog-template-refine",
+        "quiet",
     )
-    parser.add_argument(
-        "--enable-point-deep-combo",
-        action="store_true",
-        help="Enable slow second-pass point-centroid raw WFS combination recovery.",
+
+    for option in string_options:
+        parser.add_argument(f"--{option}")
+    for option in float_options:
+        parser.add_argument(f"--{option}", type=float)
+    for option in int_options:
+        parser.add_argument(f"--{option}", type=int)
+    for option in bool_options:
+        parser.add_argument(f"--{option}", action=argparse.BooleanOptionalAction)
+
+    parser.set_defaults(**config_defaults)
+    args = parser.parse_args()
+    require_configured(
+        args,
+        ("target_gpkg", "council_land_gpkg", "os_wfs_gpkg", "output_gpkg"),
+        "capture",
     )
-    parser.add_argument(
-        "--enable-point-merged-combo",
-        action="store_true",
-        help="Enable slow point-centroid merged WFS combination recovery.",
-    )
-    parser.add_argument(
-        "--enable-point-contained-union",
-        action="store_true",
-        help="Enable slow council-contained WFS union recovery for point targets.",
-    )
-    parser.add_argument(
-        "--enable-point-polygonized-combo",
-        action="store_true",
-        help="Enable slow point-centroid polygonized WFS cell combination recovery.",
-    )
-    parser.add_argument(
-        "--enable-point-combined-polygonized-combo",
-        action="store_true",
-        help="Enable slow point-centroid combined-source polygonized cell recovery.",
-    )
-    parser.add_argument(
-        "--point-deep-combo-max-candidates",
-        type=int,
-        default=32,
-        help="Second-pass max WFS candidates for unresolved point-centroid raw WFS combinations.",
-    )
-    parser.add_argument("--point-combo-max-area", type=float, default=850.0, help="Max area for point-centroid WFS combinations.")
-    parser.add_argument(
-        "--point-merge-combo-search-radius",
-        type=float,
-        default=60.0,
-        help="Search radius for point-centroid combinations against merged OS WFS polygons.",
-    )
-    parser.add_argument(
-        "--point-nearest-wfs-max-distance",
-        type=float,
-        default=30.0,
-        help=(
-            "Maximum distance in meters for nearest WFS building/land fallback. "
-            "This lets road-level points look slightly nearby without snapping to distant polygons."
-        ),
-    )
-    parser.add_argument(
-        "--wfs-theme-include",
-        default="building,land",
-        help="Comma-separated WFS Theme substrings allowed for capture candidates.",
-    )
-    parser.add_argument(
-        "--fallback-min-area",
-        type=float,
-        default=20.0,
-        help="Minimum polygon area in m2 for nearest WFS fallback candidates. Set 0 to disable.",
-    )
-    parser.add_argument(
-        "--fallback-max-aspect-ratio",
-        type=float,
-        default=20.0,
-        help="Maximum bbox aspect ratio for nearest WFS fallback candidates. Set 0 to disable.",
-    )
-    parser.add_argument(
-        "--fallback-min-compactness",
-        type=float,
-        default=0.025,
-        help="Minimum compactness for nearest WFS fallback candidates. Set 0 to disable.",
-    )
-    parser.add_argument(
-        "--point-contained-union-max-container-area",
-        type=float,
-        default=5000.0,
-        help="Max council container area for point-centroid contained WFS union recovery.",
-    )
-    parser.add_argument(
-        "--council-driven-wfs-min-iou",
-        type=float,
-        default=0.75,
-        help="Minimum IoU between a WFS candidate and the containing council polygon for council-driven WFS selection.",
-    )
-    parser.add_argument(
-        "--council-driven-wfs-min-seed-coverage",
-        type=float,
-        default=0.80,
-        help="Minimum fraction of the containing council polygon covered by the WFS candidate.",
-    )
-    parser.add_argument(
-        "--council-driven-wfs-min-wfs-coverage",
-        type=float,
-        default=0.70,
-        help="Minimum fraction of the WFS candidate covered by the containing council polygon.",
-    )
-    parser.add_argument(
-        "--council-driven-wfs-min-area-ratio",
-        type=float,
-        default=1.35,
-        help="Minimum candidate/current area ratio required to override an existing point capture.",
-    )
-    parser.add_argument(
-        "--council-driven-wfs-max-seed-area",
-        type=float,
-        default=5000.0,
-        help="Maximum containing council polygon area considered for council-driven WFS selection.",
-    )
-    parser.add_argument(
-        "--council-driven-wfs-max-candidate-seed-area-ratio",
-        type=float,
-        default=1.80,
-        help="Maximum WFS candidate/council seed area ratio for council-driven WFS selection.",
-    )
-    parser.add_argument(
-        "--council-driven-wfs-max-candidate-area-extra",
-        type=float,
-        default=80.0,
-        help="Extra square meters allowed above council seed area for council-driven WFS selection.",
-    )
-    parser.add_argument(
-        "--late-council-driven-wfs-min-iou",
-        type=float,
-        default=0.90,
-        help="Final strict council-driven pass minimum IoU between WFS candidate and council seed.",
-    )
-    parser.add_argument(
-        "--late-council-driven-wfs-min-coverage",
-        type=float,
-        default=0.90,
-        help="Final strict council-driven pass minimum reciprocal coverage between WFS candidate and council seed.",
-    )
-    parser.add_argument(
-        "--late-council-driven-wfs-min-area-ratio",
-        type=float,
-        default=1.80,
-        help="Final strict council-driven pass minimum candidate/current area ratio.",
-    )
-    parser.add_argument(
-        "--late-council-driven-wfs-max-current-seed-iou",
-        type=float,
-        default=0.35,
-        help="Final strict council-driven pass only overrides captures with lower current/council IoU.",
-    )
-    parser.add_argument(
-        "--late-council-driven-wfs-max-seed-area",
-        type=float,
-        default=1500.0,
-        help="Final strict council-driven pass maximum containing council seed area.",
-    )
-    parser.add_argument("--point-polygonize-search-radius", type=float, default=40.0, help="Search radius for point-centroid polygonized WFS cell combinations.")
-    parser.add_argument("--point-polygonize-max-candidates", type=int, default=24, help="Max polygonized WFS cells for point-centroid combinations.")
-    parser.add_argument(
-        "--point-polygonize-snap-refine-tolerance",
-        type=float,
-        default=0.01,
-        help="Centroid tolerance for late snapped polygonized-cell refinement of point fallback captures.",
-    )
-    parser.add_argument(
-        "--point-polygonize-snap-refine-grid",
-        type=float,
-        default=0.0,
-        help="Precision grid used by late snapped polygonized-cell refinement. Defaults to 0 because GPKG does not preserve Shapely precision models; set >0 to enable experimental loose-match refinement.",
-    )
-    parser.add_argument(
-        "--point-polygonize-snap-refine-max-existing-symdiff",
-        type=float,
-        default=600.0,
-        help="Max symmetric-difference area versus the existing fallback geometry for snapped polygonized refinement.",
-    )
-    parser.add_argument(
-        "--point-polygonized-precision-model-grid",
-        type=float,
-        default=0.0,
-        help="Precision grid for late Shapely precision-model cleanup of point polygonized captures. Defaults to 0 to preserve WFS-derived coordinates.",
-    )
-    parser.add_argument(
-        "--point-polygonized-precision-model-tolerance",
-        type=float,
-        default=0.001,
-        help="Max centroid distance from the input point after point polygonized precision-model cleanup.",
-    )
-    parser.add_argument(
-        "--point-polygonized-precision-model-max-existing-symdiff",
-        type=float,
-        default=0.00002,
-        help="Max symmetric-difference area versus the existing polygonized geometry for precision-model cleanup.",
-    )
-    parser.add_argument(
-        "--step2-output-precision-grid",
-        type=float,
-        default=0.0,
-        help="Precision grid in meters applied only to step2 OS WFS merge intersection outputs before writing. Defaults to 0 to preserve WFS-derived coordinates.",
-    )
-    parser.add_argument(
-        "--step3-intersection-output-precision-grid",
-        type=float,
-        default=0.0,
-        help="Precision grid in meters applied only to step3 council intersection fallback outputs before writing. Defaults to 0 because council geometry is not an allowed final boundary source.",
-    )
-    parser.add_argument(
-        "--point-source-centroid-refine-grid",
-        type=float,
-        default=0.0,
-        help="Precision grid in meters for late point-contained source polygon centroid refinement of fallback captures. Defaults to 0 to preserve WFS-derived coordinates.",
-    )
-    parser.add_argument(
-        "--point-source-centroid-refine-tolerance",
-        type=float,
-        default=0.05,
-        help="Centroid tolerance in meters after precision rounding for late point-contained source polygon refinement.",
-    )
-    parser.add_argument(
-        "--point-source-centroid-refine-max-area",
-        type=float,
-        default=850.0,
-        help="Maximum source polygon area for late point-contained source polygon centroid refinement.",
-    )
-    parser.add_argument(
-        "--point-chargegeog-template-max-area",
-        type=float,
-        default=850.0,
-        help="Maximum donor geometry area for late same-chargegeog template translation refinement.",
-    )
-    parser.add_argument(
-        "--council-seed-wfs-repair-search-radius",
-        type=float,
-        default=40.0,
-        help="Search radius for late WFS polygonized repair using council land only as a reference seed.",
-    )
-    parser.add_argument(
-        "--council-seed-wfs-repair-max-cells",
-        type=int,
-        default=16,
-        help="Maximum WFS polygonized cells allowed in late council-seed repair output.",
-    )
-    parser.add_argument(
-        "--council-seed-wfs-repair-min-cell-reference-coverage",
-        type=float,
-        default=0.5,
-        help="Minimum fraction of each selected WFS cell that must overlap the council seed in late repair.",
-    )
-    parser.add_argument(
-        "--council-seed-wfs-repair-min-reference-iou",
-        type=float,
-        default=0.9,
-        help="Minimum IoU between repaired WFS cell union and council seed before accepting late repair.",
-    )
-    parser.add_argument(
-        "--council-seed-wfs-repair-centroid-tolerance",
-        type=float,
-        default=0.3,
-        help="Maximum centroid distance from input point for late council-seed WFS repair.",
-    )
-    parser.add_argument(
-        "--council-seed-wfs-repair-centroid-improvement",
-        type=float,
-        default=0.5,
-        help="Required centroid-distance improvement over the current geometry before accepting late council-seed WFS repair.",
-    )
-    parser.add_argument(
-        "--disable-point-chargegeog-template-refine",
-        action="store_true",
-        help="Disable late same-chargegeog template translation refinement for point fallback captures.",
-    )
-    parser.add_argument(
-        "--final-output-precision-grid",
-        type=float,
-        default=0.0,
-        help="Precision grid in meters applied to final output geometries before writing. Defaults to 0 because written GPKG coordinates can lose strict matches.",
-    )
-    parser.add_argument("--quiet", action="store_true", help="Hide step summary lines (progress bars remain).")
-    return parser.parse_args()
+    return args
 
 
 def _parse_wfs_theme_include(value: str) -> tuple[str, ...]:
@@ -740,17 +533,78 @@ def _pick_single_polygon_with_anchor(geom, anchor_geom):
     return min(polys, key=lambda p: (float(p.distance(anchor_geom)), -float(p.area)))
 
 
-def _force_single_polygon_per_row(result: gpd.GeoDataFrame, source_geom_by_id: dict[int, object]) -> gpd.GeoDataFrame:
+def _connect_polygon_parts(geom, *, bridge_width: float):
+    polys = [poly for poly in _polygon_candidates(geom) if float(poly.area) > 0.0]
+    if not polys:
+        return geom
+    if len(polys) == 1:
+        return polys[0]
+
+    connected = max(polys, key=lambda poly: float(poly.area))
+    remaining = [poly for poly in polys if poly is not connected]
+    width = max(float(bridge_width), 0.001)
+
+    while remaining:
+        next_poly = min(remaining, key=lambda poly: float(connected.distance(poly)))
+        remaining.remove(next_poly)
+        if connected.intersects(next_poly) or connected.touches(next_poly):
+            bridge = None
+        else:
+            start, end = nearest_points(connected, next_poly)
+            bridge_line = LineString([start, end])
+            bridge = bridge_line.buffer(width, cap_style=1, join_style=1)
+
+        pieces = [connected, next_poly]
+        if bridge is not None and not bridge.is_empty:
+            pieces.append(bridge)
+        connected = unary_union(pieces)
+        if not connected.is_valid:
+            connected = make_valid(connected)
+        connected = _extract_polygonal_geometry(connected)
+        if not _is_polygonal(connected):
+            return connected
+
+    if isinstance(connected, MultiPolygon):
+        polys = _polygon_candidates(connected)
+        if len(polys) == 1:
+            return polys[0]
+    return connected
+
+
+def _ensure_single_polygon_with_anchor(geom, anchor_geom, *, bridge_width: float = 0.5):
+    polys = _polygon_candidates(geom)
+    if not polys:
+        return None
+    if len(polys) == 1:
+        return polys[0]
+
+    connected = _connect_polygon_parts(MultiPolygon(polys), bridge_width=bridge_width)
+    if isinstance(connected, Polygon):
+        return connected
+    if isinstance(connected, MultiPolygon) and len(connected.geoms) == 1:
+        return connected.geoms[0]
+    return _pick_single_polygon_with_anchor(connected, anchor_geom)
+
+
+def _force_single_polygon_per_row(
+    result: gpd.GeoDataFrame,
+    source_geom_by_id: dict[int, object],
+    *,
+    bridge_width: float = 0.5,
+) -> gpd.GeoDataFrame:
     out = result.copy()
     new_geoms = []
     for _, row in out.iterrows():
         src_id = int(row["capture_src_id"])
         anchor = source_geom_by_id.get(src_id)
-        new_geoms.append(_pick_single_polygon_with_anchor(row.geometry, anchor))
+        single_geom = _ensure_single_polygon_with_anchor(
+            row.geometry,
+            anchor,
+            bridge_width=bridge_width,
+        )
+        new_geoms.append(single_geom if single_geom is not None else row.geometry)
     out["geometry"] = new_geoms
     return out
-
-
 
 
 def _extract_polygonal_geometry(geom):
@@ -778,12 +632,62 @@ def _extract_polygonal_geometries(result: gpd.GeoDataFrame) -> int:
     return changed
 
 
+def _remove_polygon_holes(geom):
+    polys = _polygon_candidates(geom)
+    if not polys:
+        return geom, 0
+
+    hole_count = sum(len(poly.interiors) for poly in polys)
+    if hole_count == 0:
+        return geom, 0
+
+    cleaned = [Polygon(poly.exterior) for poly in polys if float(poly.area) > 0.0]
+    if not cleaned:
+        return geom, 0
+
+    cleaned_geom = cleaned[0] if len(cleaned) == 1 else MultiPolygon(cleaned)
+    if not cleaned_geom.is_valid:
+        cleaned_geom = make_valid(cleaned_geom)
+    cleaned_geom = _extract_polygonal_geometry(cleaned_geom)
+    return cleaned_geom, hole_count
+
+
+def _remove_holes_from_result(result: gpd.GeoDataFrame) -> tuple[int, int]:
+    if result.empty:
+        return 0, 0
+
+    changed = 0
+    removed = 0
+    geoms = []
+    for geom in result.geometry:
+        cleaned, hole_count = _remove_polygon_holes(geom)
+        geoms.append(cleaned)
+        if hole_count:
+            changed += 1
+            removed += hole_count
+    if changed:
+        result.geometry = geoms
+    return changed, removed
+
+
+def _polygon_hole_count(geom) -> int:
+    return sum(len(poly.interiors) for poly in _polygon_candidates(geom))
+
+
 def _polygon_only_mask(gdf: gpd.GeoDataFrame) -> gpd.Series:
     geom = gdf.geometry
     not_missing = geom.apply(lambda value: value is not None)
     not_empty = geom.apply(lambda value: value is not None and not value.is_empty)
     geom_type = geom.apply(lambda value: "" if value is None else value.geom_type.upper())
     return not_missing & not_empty & geom_type.isin(["POLYGON", "MULTIPOLYGON"])
+
+
+def _single_polygon_only_mask(gdf: gpd.GeoDataFrame) -> gpd.Series:
+    geom = gdf.geometry
+    not_missing = geom.apply(lambda value: value is not None)
+    not_empty = geom.apply(lambda value: value is not None and not value.is_empty)
+    geom_type = geom.apply(lambda value: "" if value is None else value.geom_type.upper())
+    return not_missing & not_empty & geom_type.eq("POLYGON")
 
 
 def _pick_centroid_aligned_polygon(
@@ -1047,6 +951,316 @@ def _geometry_iou(a, b) -> float:
     if union_area <= 0.0:
         return 0.0
     return inter_area / union_area
+
+
+def _find_first_column(gdf: gpd.GeoDataFrame, names: tuple[str, ...]) -> str | None:
+    wanted = {name.lower().replace("_", "").replace(" ", "") for name in names}
+    for column in gdf.columns:
+        normalised = str(column).lower().replace("_", "").replace(" ", "")
+        if normalised in wanted:
+            return column
+    return None
+
+
+def _wfs_feature_signature(source: gpd.GeoDataFrame, pos: int) -> tuple[tuple[str, str], ...]:
+    signature = []
+    for label, names in (
+        ("theme", ("Theme", "theme")),
+        (
+            "descriptive_group",
+            ("DescriptiveGroup", "descriptive_group", "descriptive group", "descgroup"),
+        ),
+        (
+            "descriptive_term",
+            ("DescriptiveTerm", "descriptive_term", "descriptive term", "descterm"),
+        ),
+    ):
+        column = _find_first_column(source, names)
+        if column is None:
+            continue
+        value = _clean_link_value(source.iloc[int(pos)].get(column)).lower()
+        if value:
+            signature.append((label, value))
+    return tuple(signature)
+
+
+def _same_wfs_reference_union_for_seed(
+    seed_geom,
+    current_geom,
+    point_geom,
+    wfs_sources: list[gpd.GeoDataFrame],
+):
+    seed_area = float(seed_geom.area)
+    best = None
+    best_key = None
+
+    for source in wfs_sources:
+        if source is None or source.empty:
+            continue
+        source_sidx = source.sindex
+        rows = []
+        for pos in source_sidx.query(seed_geom, predicate="intersects"):
+            pos = int(pos)
+            geom = source.geometry.iloc[pos]
+            if not _is_polygonal(geom):
+                continue
+            inter_seed = float(geom.intersection(seed_geom).area)
+            if inter_seed <= 0.05:
+                continue
+            inter_current = float(geom.intersection(current_geom).area) if _is_polygonal(current_geom) else 0.0
+            rows.append(
+                {
+                    "pos": pos,
+                    "geometry": geom,
+                    "signature": _wfs_feature_signature(source, pos),
+                    "inter_seed": inter_seed,
+                    "inter_current": inter_current,
+                    "area": float(geom.area),
+                }
+            )
+
+        if not rows:
+            continue
+
+        anchors = [row for row in rows if row["geometry"].intersects(point_geom)]
+        if not anchors:
+            anchors = [row for row in rows if row["inter_current"] > 0.05]
+        if not anchors:
+            continue
+
+        anchor = max(
+            anchors,
+            key=lambda row: (
+                float(row["inter_current"]),
+                float(row["inter_seed"]),
+                -float(row["area"]),
+            ),
+        )
+        signature = anchor["signature"]
+        same_rows = [row for row in rows if not signature or row["signature"] == signature]
+        if not same_rows:
+            continue
+
+        seen_wkb = set()
+        same_geoms = []
+        for row in same_rows:
+            geom = row["geometry"]
+            geom_wkb = geom.wkb
+            if geom_wkb in seen_wkb:
+                continue
+            seen_wkb.add(geom_wkb)
+            same_geoms.append(geom)
+
+        if not same_geoms:
+            continue
+
+        raw_union = same_geoms[0] if len(same_geoms) == 1 else unary_union(same_geoms)
+        if not _is_polygonal(raw_union):
+            continue
+
+        constrained = raw_union.intersection(seed_geom)
+        if not constrained.is_valid:
+            constrained = make_valid(constrained)
+        constrained = _extract_polygonal_geometry(constrained)
+        if not _is_polygonal(constrained):
+            continue
+
+        constrained_inter_area = float(constrained.intersection(seed_geom).area)
+        constrained_area = float(constrained.area)
+        if constrained_area <= 0.01 or constrained_inter_area <= 0.01:
+            continue
+
+        raw_seed_coverage = float(raw_union.intersection(seed_geom).area) / max(seed_area, 1e-9)
+        raw_outside_area = float(raw_union.difference(seed_geom).area)
+        constrained_seed_coverage = constrained_inter_area / max(seed_area, 1e-9)
+
+        key = (
+            constrained_seed_coverage,
+            constrained_inter_area,
+            raw_seed_coverage,
+            -raw_outside_area,
+            -len(same_geoms),
+        )
+        if best_key is None or key > best_key:
+            best_key = key
+            best = {
+                "geometry": constrained,
+                "piece_count": len(same_geoms),
+                "raw_seed_coverage": raw_seed_coverage,
+                "raw_outside_area": raw_outside_area,
+                "constrained_seed_coverage": constrained_seed_coverage,
+                "constrained_inter_area": constrained_inter_area,
+                "constrained_area": constrained_area,
+            }
+
+    return best
+
+
+def _prepare_reference_qa_candidate(geom, point_geom, *, bridge_width: float):
+    if geom is None or bool(getattr(geom, "is_empty", False)):
+        return None
+    if not geom.is_valid:
+        geom = make_valid(geom)
+    geom = _extract_polygonal_geometry(geom)
+    if not _is_polygonal(geom):
+        return None
+    geom = _ensure_single_polygon_with_anchor(geom, point_geom, bridge_width=bridge_width)
+    if not isinstance(geom, Polygon) or geom.is_empty:
+        return None
+    if not geom.is_valid:
+        geom = make_valid(geom)
+        geom = _ensure_single_polygon_with_anchor(geom, point_geom, bridge_width=bridge_width)
+    if not isinstance(geom, Polygon) or geom.is_empty:
+        return None
+    return geom
+
+
+def _apply_reference_constrained_wfs_qa(
+    result: gpd.GeoDataFrame,
+    point_reps: gpd.GeoDataFrame,
+    council_gdf: gpd.GeoDataFrame,
+    wfs_sources: list[gpd.GeoDataFrame],
+    *,
+    min_seed_area: float,
+    max_seed_area: float,
+    trim_max_seed_area: float,
+    trim_min_seed_coverage: float,
+    trim_min_current_coverage: float,
+    trim_min_outside_area: float,
+    trim_max_missing_ratio: float,
+    completion_min_seed_coverage: float,
+    completion_min_coverage_gain: float,
+    completion_max_pieces: int,
+    completion_min_area_ratio: float,
+    raw_union_max_outside_area: float,
+    bridge_width: float,
+) -> dict[str, int]:
+    if result.empty or point_reps.empty or council_gdf.empty or not wfs_sources:
+        return {}
+    if "capture_stage" not in result.columns or "capture_success" not in result.columns:
+        return {}
+
+    point_ids = set(point_reps["capture_src_id"].astype(int).tolist())
+    eligible_mask = (
+        result["capture_success"].fillna(False).astype(bool)
+        & result["capture_src_id"].astype(int).isin(point_ids)
+        & result.geometry.notna()
+    )
+    if not bool(eligible_mask.any()):
+        return {}
+
+    eligible_ids = set(result.loc[eligible_mask, "capture_src_id"].astype(int).tolist())
+    eligible_points = point_reps[point_reps["capture_src_id"].astype(int).isin(eligible_ids)].copy()
+    council_seeds = pick_smallest_intersection_polygon(eligible_points, council_gdf)
+    if council_seeds.empty:
+        return {}
+
+    point_by_id = point_reps.set_index("capture_src_id")["geometry"].to_dict()
+    seed_by_id = council_seeds.set_index("capture_src_id")["geometry"].to_dict()
+    row_by_id = {int(src_id): idx for idx, src_id in zip(result.index, result["capture_src_id"])}
+    geom_col = result.geometry.name
+    counts: dict[str, int] = {}
+
+    for src_id, seed_geom in seed_by_id.items():
+        src_id = int(src_id)
+        idx = row_by_id.get(src_id)
+        point_geom = point_by_id.get(src_id)
+        if idx is None or point_geom is None or point_geom.is_empty or not _is_polygonal(seed_geom):
+            continue
+        current_geom = result.at[idx, geom_col]
+        if not _is_polygonal(current_geom):
+            continue
+
+        seed_area = float(seed_geom.area)
+        current_area = float(current_geom.area)
+        if seed_area < float(min_seed_area) or current_area <= 0.01:
+            continue
+
+        current_inter_area = float(current_geom.intersection(seed_geom).area)
+        current_seed_coverage = current_inter_area / max(seed_area, 1e-9)
+        current_coverage = current_inter_area / max(current_area, 1e-9)
+        outside_area = float(current_geom.difference(seed_geom).area)
+        missing_area = max(seed_area - current_inter_area, 0.0)
+
+        best_stage = None
+        best_geom = None
+        best_key = None
+
+        if (
+            seed_area <= float(trim_max_seed_area)
+            and current_seed_coverage >= float(trim_min_seed_coverage)
+            and current_coverage >= float(trim_min_current_coverage)
+            and outside_area >= float(trim_min_outside_area)
+            and missing_area / max(seed_area, 1e-9) <= float(trim_max_missing_ratio)
+        ):
+            # Council land is a reference constraint here; the output remains the WFS geometry clipped
+            # to the reference footprint rather than the council polygon by itself.
+            trimmed = _prepare_reference_qa_candidate(
+                current_geom.intersection(seed_geom),
+                point_geom,
+                bridge_width=bridge_width,
+            )
+            if trimmed is not None and float(trimmed.area) > 0.01:
+                best_stage = "wfs_reference_constrained_council_reference_qa"
+                best_geom = trimmed
+                best_key = (10.0 + outside_area, current_seed_coverage, current_coverage)
+
+        same_wfs = _same_wfs_reference_union_for_seed(
+            seed_geom,
+            current_geom,
+            point_geom,
+            wfs_sources,
+        )
+        if same_wfs is not None:
+            coverage_gain = same_wfs["constrained_inter_area"] - current_inter_area
+            completed_area_ratio = same_wfs["constrained_area"] / max(seed_area, 1e-9)
+            completion_ok = (
+                seed_area <= float(max_seed_area)
+                and current_seed_coverage < 0.92
+                and same_wfs["constrained_seed_coverage"] >= float(completion_min_seed_coverage)
+                and coverage_gain >= float(completion_min_coverage_gain)
+                and same_wfs["piece_count"] <= int(completion_max_pieces)
+                and completed_area_ratio >= float(completion_min_area_ratio)
+                and same_wfs["raw_outside_area"] <= float(raw_union_max_outside_area)
+            )
+            underfill_ok = (
+                seed_area <= float(max_seed_area)
+                and 0.50 <= current_seed_coverage < float(trim_min_seed_coverage)
+                and same_wfs["raw_seed_coverage"] >= 0.95
+                and coverage_gain >= float(completion_min_coverage_gain)
+                and same_wfs["piece_count"] <= int(completion_max_pieces)
+                and completed_area_ratio >= float(completion_min_area_ratio)
+                and same_wfs["raw_outside_area"] <= float(raw_union_max_outside_area)
+            )
+            if completion_ok or underfill_ok:
+                completed = _prepare_reference_qa_candidate(
+                    same_wfs["geometry"],
+                    point_geom,
+                    bridge_width=bridge_width,
+                )
+                if completed is not None and float(completed.area) > 0.01:
+                    stage = "wfs_reference_footprint_completion_qa"
+                    key = (
+                        100.0 + coverage_gain,
+                        same_wfs["constrained_seed_coverage"],
+                        -same_wfs["raw_outside_area"],
+                    )
+                    if best_key is None or key > best_key:
+                        best_stage = stage
+                        best_geom = completed
+                        best_key = key
+
+        if best_stage is None or best_geom is None:
+            continue
+        if best_geom.equals_exact(current_geom, 0.0) or float(best_geom.symmetric_difference(current_geom).area) < 1e-9:
+            continue
+
+        result.at[idx, geom_col] = best_geom
+        result.at[idx, "capture_stage"] = best_stage
+        result.at[idx, "capture_success"] = True
+        counts[best_stage] = counts.get(best_stage, 0) + 1
+
+    return counts
 
 
 def _apply_council_seed_wfs_polygonized_repair(
@@ -1467,6 +1681,7 @@ def main() -> None:
                     print("[INFO] Building os_wfs_merge inline from os_wfs...")
                 os_wfs_merge = build_wfs_merge_gdf(
                     get_os_wfs_basemap(),
+                    get_council_land(),
                     include_terms=wfs_theme_include,
                 )
                 os_wfs_merge = os_wfs_merge[os_wfs_merge.geometry.notna() & ~os_wfs_merge.geometry.is_empty].copy()
@@ -1475,7 +1690,7 @@ def main() -> None:
                     save_path.parent.mkdir(parents=True, exist_ok=True)
                     if save_path.exists():
                         save_path.unlink()
-                    os_wfs_merge.to_file(save_path, layer="monmouthshire_polygons_in_buffers", driver="GPKG")
+                    os_wfs_merge.to_file(save_path, layer=args.save_built_os_wfs_merge_layer, driver="GPKG")
                     if not args.quiet:
                         print(f"[INFO] Saved inline-built os_wfs_merge to: {save_path}")
         return os_wfs_merge
@@ -1968,7 +2183,11 @@ def main() -> None:
         result.loc[remaining_mask, "capture_success"] = True
 
     source_geom_by_id = target.set_index("capture_src_id")["geometry"].to_dict()
-    result = _force_single_polygon_per_row(result, source_geom_by_id)
+    result = _force_single_polygon_per_row(
+        result,
+        source_geom_by_id,
+        bridge_width=args.single_polygon_bridge_width,
+    )
     recentered_point_fallbacks = 0
     snapped_polygonized_refinements = 0
     if not point_targets.empty:
@@ -2000,7 +2219,11 @@ def main() -> None:
             geometry_by_id=force_nearest_map,
             stage="fallback_force_polygon_nearest_os_wfs_merge",
         )
-        result = _force_single_polygon_per_row(result, source_geom_by_id)
+        result = _force_single_polygon_per_row(
+            result,
+            source_geom_by_id,
+            bridge_width=args.single_polygon_bridge_width,
+        )
 
     result, linked_parent_unions, linked_parent_union_skipped = _apply_linked_parent_unions(result)
 
@@ -2100,6 +2323,31 @@ def main() -> None:
         if not args.quiet:
             print(f"[INFO] Late council-driven WFS reference overrides: {len(late_council_driven_updated)}")
 
+    reference_wfs_qa_counts: dict[str, int] = {}
+    if not point_targets.empty and not args.disable_reference_constrained_wfs_qa:
+        reference_wfs_qa_counts = _apply_reference_constrained_wfs_qa(
+            result,
+            point_reps,
+            get_council_land(),
+            [get_os_wfs_raw_dedup(), get_os_wfs_merge()],
+            min_seed_area=args.reference_qa_min_seed_area,
+            max_seed_area=args.reference_qa_max_seed_area,
+            trim_max_seed_area=args.reference_qa_trim_max_seed_area,
+            trim_min_seed_coverage=args.reference_qa_trim_min_seed_coverage,
+            trim_min_current_coverage=args.reference_qa_trim_min_current_coverage,
+            trim_min_outside_area=args.reference_qa_trim_min_outside_area,
+            trim_max_missing_ratio=args.reference_qa_trim_max_missing_ratio,
+            completion_min_seed_coverage=args.reference_qa_completion_min_seed_coverage,
+            completion_min_coverage_gain=args.reference_qa_completion_min_coverage_gain,
+            completion_max_pieces=args.reference_qa_completion_max_pieces,
+            completion_min_area_ratio=args.reference_qa_completion_min_area_ratio,
+            raw_union_max_outside_area=args.reference_qa_raw_union_max_outside_area,
+            bridge_width=args.single_polygon_bridge_width,
+        )
+        if not args.quiet:
+            total_reference_wfs_qa = sum(reference_wfs_qa_counts.values())
+            print(f"[INFO] Reference-constrained WFS QA updates: {total_reference_wfs_qa}")
+
     final_polygonal_extractions = _extract_polygonal_geometries(result)
 
     point_target_ids = (
@@ -2135,7 +2383,21 @@ def main() -> None:
             "Please check os_wfs/os_wfs_merge availability."
         )
 
+    result = _force_single_polygon_per_row(
+        result,
+        source_geom_by_id,
+        bridge_width=args.single_polygon_bridge_width,
+    )
+    no_holes_rows_changed, no_holes_removed = _remove_holes_from_result(result)
+
     final_precision_changed = _apply_final_precision_grid(result, args.final_output_precision_grid)
+    result = _force_single_polygon_per_row(
+        result,
+        source_geom_by_id,
+        bridge_width=args.single_polygon_bridge_width,
+    )
+    post_precision_no_holes_rows_changed, post_precision_no_holes_removed = _remove_holes_from_result(result)
+
     final_non_polygon_mask = (~_polygon_only_mask(result)) & result["capture_success"].fillna(False).astype(bool)
     if final_non_polygon_mask.any():
         bad_ids = result.loc[final_non_polygon_mask, "capture_src_id"].astype(int).tolist()
@@ -2143,6 +2405,17 @@ def main() -> None:
             f"Final precision grid produced non-polygon geometries for capture_src_id={bad_ids}. "
             "Set --final-output-precision-grid 0 to disable output rounding."
         )
+    final_non_single_polygon_mask = (
+        ~_single_polygon_only_mask(result)
+    ) & result["capture_success"].fillna(False).astype(bool)
+    if final_non_single_polygon_mask.any():
+        bad_ids = result.loc[final_non_single_polygon_mask, "capture_src_id"].astype(int).tolist()
+        raise RuntimeError(
+            f"Final output contains non-single Polygon geometries for capture_src_id={bad_ids}."
+        )
+    final_holes = int(result.geometry.apply(_polygon_hole_count).sum())
+    if final_holes:
+        raise RuntimeError(f"Final output contains {final_holes} polygon holes after no-hole enforcement.")
 
     output_path = Path(args.output_gpkg)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2188,8 +2461,18 @@ def main() -> None:
             print(f"[INFO] Point polygonized precision-model refinements: {polygonized_precision_model_refinements}")
         if late_council_driven_updated:
             print(f"[INFO] Late council-driven WFS reference overrides: {len(late_council_driven_updated)}")
+        if reference_wfs_qa_counts:
+            for stage, cnt in sorted(reference_wfs_qa_counts.items()):
+                print(f"[INFO] {stage}: {cnt}")
         if final_polygonal_extractions:
             print(f"[INFO] Final polygonal geometry extractions: {final_polygonal_extractions}")
+        total_no_holes_rows_changed = no_holes_rows_changed + post_precision_no_holes_rows_changed
+        total_no_holes_removed = no_holes_removed + post_precision_no_holes_removed
+        if total_no_holes_removed:
+            print(
+                f"[INFO] Removed polygon holes: "
+                f"{total_no_holes_removed} holes across {total_no_holes_rows_changed} rows"
+            )
         if final_precision_changed:
             print(
                 f"[INFO] Final output precision grid "

@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
+import sys
 import warnings
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import geopandas as gpd
@@ -14,6 +15,9 @@ import numpy as np
 import pandas as pd
 import shapely
 from shapely.geometry import Point
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "polygon-capture"))
+from _core.config import add_config_argument, get_config_section_from_argv, require_configured  # noqa: E402
 
 
 ID_JOIN_CANDIDATES: List[Tuple[str, ...]] = [
@@ -97,13 +101,6 @@ def _dedupe_output_tokens(council: str, location: str) -> tuple[str, str]:
         short_c = c.split("_")[0] if "_" in c else c
         return (short_c or c, "location")
     return (c, l)
-
-
-def _read_config(config_path: Optional[str]) -> Dict[str, object]:
-    if not config_path:
-        return {}
-    with open(config_path, "r", encoding="utf-8") as f:
-        return json.load(f)
 
 
 def _pick_col(col_map: Dict[str, str], candidates: List[str]) -> Optional[str]:
@@ -320,32 +317,38 @@ def _derive_spatial_issue(offset_m: pd.Series, note: pd.Series, tol: float) -> p
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Compute offset_m + spatial_issue by auto-joining address CSV with QA polygon GPKG.")
-    parser.add_argument("--config", help="Path to JSON config file.")
+    config_defaults, _ = get_config_section_from_argv(
+        "spatial_qa",
+        allow_top_level=True,
+        include_package_defaults=True,
+    )
+    parser = argparse.ArgumentParser(
+        description="Compute offset_m + spatial_issue by auto-joining address CSV with QA polygon GPKG.",
+        argument_default=argparse.SUPPRESS,
+    )
+    add_config_argument(parser)
     parser.add_argument("--address-csv", help="Address result CSV path.")
     parser.add_argument("--qa-gpkg", help="QA polygon GPKG path.")
     parser.add_argument("--qa-layer", help="Layer name inside QA GPKG (optional).")
     parser.add_argument("--output-csv", help="Output CSV path. Default: <council>_<location>_qa_<rows>.csv (with dedupe).")
     parser.add_argument("--output-gpkg", help="Optional: output GPKG path with offset_m/spatial_issue appended.")
-    parser.add_argument("--offset-tolerance", type=float, default=0.0, help="Distance <= tolerance considered inside/touching (meters).")
-    parser.add_argument("--force-27700", action="store_true", help="If input GPKG has no CRS, force EPSG:27700.")
-    return parser.parse_args()
+    parser.add_argument("--offset-tolerance", type=float, help="Distance <= tolerance considered inside/touching (meters).")
+    parser.add_argument("--force-27700", action=argparse.BooleanOptionalAction, help="If input GPKG has no CRS, force EPSG:27700.")
+    parser.set_defaults(**config_defaults)
+    args = parser.parse_args()
+    require_configured(args, ("address_csv", "qa_gpkg"), "spatial_qa")
+    return args
 
 
 def main() -> None:
     args = parse_args()
-    cfg = _read_config(args.config)
-
-    address_csv = args.address_csv or cfg.get("address_csv")
-    qa_gpkg = args.qa_gpkg or cfg.get("qa_gpkg")
-    qa_layer = args.qa_layer or cfg.get("qa_layer")
-    output_csv = args.output_csv or cfg.get("output_csv")
-    output_gpkg = args.output_gpkg or cfg.get("output_gpkg")
-    offset_tolerance = float(args.offset_tolerance if args.offset_tolerance is not None else cfg.get("offset_tolerance", 0.0))
-    force_27700 = bool(args.force_27700 or cfg.get("force_27700", False))
-
-    if not address_csv or not qa_gpkg:
-        raise ValueError("Both address_csv and qa_gpkg are required (via args or config).")
+    address_csv = args.address_csv
+    qa_gpkg = args.qa_gpkg
+    qa_layer = args.qa_layer
+    output_csv = args.output_csv
+    output_gpkg = args.output_gpkg
+    offset_tolerance = float(args.offset_tolerance)
+    force_27700 = bool(args.force_27700)
 
     addr = pd.read_csv(address_csv, dtype=str)
     layer = _choose_layer(qa_gpkg, qa_layer)

@@ -23,17 +23,16 @@ import re
 import sys
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
 import requests
 
+sys.path.insert(0, str(Path(__file__).resolve().parent / "polygon-capture"))
+from _core.config import add_config_argument, get_config_section_from_argv, require_configured  # noqa: E402
+
 WFS_URL = "https://api.os.uk/features/v1/wfs"
-DEFAULT_OUTPUT_DIR = "/data/south holland/spatial/base-map"
-DEFAULT_INPUT = "/data/south holland/qa/Southholland/southholland_location_qa_9509.gpkg"
-DEFAULT_COVERAGE_INPUT = None
-DEFAULT_COVERAGE_LAYER = "southholland_location_qa_9509"
-DEFAULT_KEYS_FILE = "/env/key/spatial_capture.keys.md"
 
 
 def _load_os_api_key_from_keys_file(keys_file: Optional[str]) -> Optional[str]:
@@ -58,105 +57,123 @@ def _load_os_api_key_from_keys_file(keys_file: Optional[str]) -> Optional[str]:
 
 
 def parse_args() -> argparse.Namespace:
+    config_defaults, _ = get_config_section_from_argv("point_surrounding", include_package_defaults=True)
     parser = argparse.ArgumentParser(
-        description="Create merged point buffers and download intersecting OS WFS polygons."
+        description="Create merged point buffers and download intersecting OS WFS polygons.",
+        argument_default=argparse.SUPPRESS,
     )
+    add_config_argument(parser)
     parser.add_argument(
         "--input",
-        default=DEFAULT_INPUT,
-        help=f"Input CSV/XLSX/GeoJSON/SHP/GPKG file containing EPSG:27700 points. Default: {DEFAULT_INPUT}",
+        help="Input CSV/XLSX/GeoJSON/SHP/GPKG file containing EPSG:27700 points.",
     )
     parser.add_argument(
         "--api-key",
-        default=os.getenv("OS_API_KEY"),
         help="OS Data Hub API key. Default reads OS_API_KEY env var, then --keys-file.",
     )
     parser.add_argument(
         "--keys-file",
-        default=DEFAULT_KEYS_FILE,
         help="Optional local key file path containing key entries (used only if env vars / --api-key are absent).",
     )
-    parser.add_argument("--x-col", default="", help="Easting column name (optional for CSV/XLSX: auto-detect if omitted).")
-    parser.add_argument("--y-col", default="", help="Northing column name (optional for CSV/XLSX: auto-detect if omitted).")
-    parser.add_argument("--radius", type=float, default=50.0, help="Buffer radius in meters (default: 50).")
-    parser.add_argument("--type-names", default="Topography_TopographicArea", help="WFS layer typeNames.")
-    parser.add_argument("--page-size", type=int, default=100, help="WFS page size (count parameter).")
-    parser.add_argument("--max-pages", type=int, default=5000, help="Safety cap for max pages per window.")
-    parser.add_argument("--window-size", type=float, default=800.0, help="Sliding window size in meters.")
-    parser.add_argument("--window-overlap", type=float, default=100.0, help="Window overlap in meters.")
+    parser.add_argument("--output-dir", help="Directory for inferred outputs when explicit output paths are omitted.")
+    parser.add_argument("--x-col", help="Easting column name (optional for CSV/XLSX: auto-detect if omitted).")
+    parser.add_argument("--y-col", help="Northing column name (optional for CSV/XLSX: auto-detect if omitted).")
+    parser.add_argument("--radius", type=float, help="Buffer radius in meters.")
+    parser.add_argument("--type-names", help="WFS layer typeNames.")
+    parser.add_argument("--page-size", type=int, help="WFS page size (count parameter).")
+    parser.add_argument("--max-pages", type=int, help="Safety cap for max pages per window.")
+    parser.add_argument("--window-size", type=float, help="Sliding window size in meters.")
+    parser.add_argument("--window-overlap", type=float, help="Window overlap in meters.")
     parser.add_argument(
         "--checkpoint-every-pages",
         type=int,
-        default=50,
         help="Write checkpoint every N pages during download.",
     )
-    parser.add_argument("--timeout", type=int, default=60, help="HTTP timeout seconds.")
+    parser.add_argument("--timeout", type=int, help="HTTP timeout seconds.")
     parser.add_argument(
         "--resume-dir",
-        default=None,
-        help=f"Resume working directory. Default: {DEFAULT_OUTPUT_DIR}/resume",
+        help="Resume working directory. Defaults to <output-dir>/resume.",
     )
     parser.add_argument(
         "--buffers-output",
-        default=f"{DEFAULT_OUTPUT_DIR}/southholland_50m_buffers_merged.gpkg",
         help="Output path for merged buffers (GPKG/GeoJSON by extension).",
     )
     parser.add_argument(
         "--polygons-output",
-        default=f"{DEFAULT_OUTPUT_DIR}/southholland_polygons_in_buffers.gpkg",
         help="Output path for polygons intersecting merged buffers (GPKG/GeoJSON by extension).",
     )
     parser.add_argument(
+        "--existing-polygons-input",
+        help=(
+            "Optional existing WFS polygons GPKG/SHP/GeoJSON used as the starting coverage set. "
+            "If omitted, --polygons-output is reused when it already exists."
+        ),
+    )
+    parser.add_argument(
+        "--existing-polygons-layer",
+        help="Layer name for --existing-polygons-input when it is a multi-layer datasource.",
+    )
+    parser.add_argument(
         "--coverage-input",
-        default=DEFAULT_COVERAGE_INPUT,
-        help="Optional vector input used for coverage check (Point/Polygon must intersect downloaded polygons).",
+        help="Optional vector input used for coverage check (point buffers / polygons must be covered by downloaded polygons).",
     )
     parser.add_argument(
         "--coverage-layer",
-        default=DEFAULT_COVERAGE_LAYER,
         help="Layer name for --coverage-input when it is a multi-layer datasource (e.g. GPKG).",
     )
     parser.add_argument(
         "--coverage-missing-output",
-        default=f"{DEFAULT_OUTPUT_DIR}/southholland_missing_after_topup.gpkg",
         help="Output path for coverage-check misses after top-up (GPKG/GeoJSON by extension).",
     )
     parser.add_argument(
         "--coverage-topup-rounds",
         type=int,
-        default=2,
         help="Max rounds for coverage top-up download (default: 2).",
     )
     parser.add_argument(
         "--coverage-topup-cell-size",
         type=float,
-        default=500.0,
         help="Grid cell size (m) used to cluster missing points for top-up requests.",
     )
     parser.add_argument(
         "--coverage-topup-expand",
         type=float,
-        default=150.0,
         help="Expand distance (m) around each top-up request bbox.",
     )
     parser.add_argument(
         "--coverage-topup-page-size",
         type=int,
-        default=1000,
         help="WFS page size used in top-up requests (default: 1000).",
     )
     parser.add_argument(
         "--coverage-topup-max-pages",
         type=int,
-        default=30,
         help="Max pages per top-up bbox request (default: 30).",
     )
     parser.add_argument(
+        "--coverage-buffer-radius",
+        type=float,
+        help="Buffer radius (m) for point coverage checks. Defaults to --radius.",
+    )
+    parser.add_argument(
+        "--coverage-min-ratio",
+        type=float,
+        help="Minimum WFS area coverage ratio for each point buffer / polygon before it is considered complete.",
+    )
+    parser.add_argument(
+        "--coverage-gap-min-area",
+        type=float,
+        help="Ignore uncovered slivers smaller than this area in square metres.",
+    )
+    parser.add_argument(
         "--disable-coverage-topup",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         help="Disable auto top-up when coverage check finds missing intersections.",
     )
-    return parser.parse_args()
+    parser.set_defaults(**config_defaults)
+    args = parser.parse_args()
+    require_configured(args, ("input",), "point_surrounding")
+    return args
 
 
 def _read_points_from_geojson(input_path: str) -> List[Tuple[float, float]]:
@@ -230,17 +247,21 @@ def _read_points(input_path: str, x_col: str, y_col: str) -> List[Tuple[float, f
     use_y = str(y_col or "").strip()
     if use_x not in df.columns or use_y not in df.columns:
         x_candidates = [
+            "api_x_27700",
             "api_easting_27700",
             "os_easting_27700",
             "top1_easting_27700",
+            "gazetteer_x_27700",
             "easting_27700",
             "easting",
             "x",
         ]
         y_candidates = [
+            "api_y_27700",
             "api_northing_27700",
             "os_northing_27700",
             "top1_northing_27700",
+            "gazetteer_y_27700",
             "northing_27700",
             "northing",
             "y",
@@ -300,22 +321,16 @@ def _resolve_preferred_input(input_path: str) -> str:
 
 
 def _infer_council_base_map_dir(input_path: str) -> str:
-    normalized = os.path.abspath(input_path).replace("\\", "/")
-    parts = [p for p in normalized.split("/") if p]
-    # expected shape like: /data/<council>/...
-    if len(parts) >= 2 and parts[0].lower() == "data":
-        council = parts[1]
-        return f"/data/{council}/spatial/base-map"
-    return DEFAULT_OUTPUT_DIR
+    return os.path.join(os.path.dirname(os.path.abspath(input_path)), "base-map")
 
 
 def _infer_council_slug(input_path: str) -> str:
     normalized = os.path.abspath(input_path).replace("\\", "/")
     parts = [p for p in normalized.split("/") if p]
     if len(parts) >= 2 and parts[0].lower() == "data":
-        # Keep slug compact and stable across naming variants (e.g. "south holland" -> "southholland").
         return re.sub(r"[^a-z0-9]+", "", parts[1].strip().lower()) or "council"
-    return "council"
+    stem = os.path.splitext(os.path.basename(input_path))[0]
+    return re.sub(r"[^a-z0-9]+", "", stem.strip().lower()) or "council"
 
 
 def _build_merged_buffers(points: Iterable[Tuple[float, float]], radius: float):
@@ -342,11 +357,34 @@ def _points_to_gdf(points: List[Tuple[float, float]], crs: str = "EPSG:27700"):
     return gpd.GeoDataFrame({"_point_idx": list(range(len(points)))}, geometry=geoms, crs=crs)
 
 
-def _load_existing_polygon_output(path: str):
+def _coverage_buffer_radius(args: argparse.Namespace) -> float:
+    radius = getattr(args, "coverage_buffer_radius", None)
+    if radius is None:
+        radius = args.radius
+    radius = float(radius)
+    if radius <= 0:
+        raise ValueError("coverage-buffer-radius must be > 0")
+    return radius
+
+
+def _points_to_buffer_gdf(
+    points: List[Tuple[float, float]],
+    radius: float,
+    crs: str = "EPSG:27700",
+):
+    pts_gdf = _points_to_gdf(points, crs=crs)
+    out = pts_gdf.copy()
+    out.geometry = out.geometry.buffer(radius)
+    out["_coverage_source_geom"] = "Point"
+    out["_coverage_buffer_radius_m"] = radius
+    return out
+
+
+def _load_existing_polygon_output(path: str, layer: Optional[str] = None):
     if not path or not os.path.exists(path):
         return _features_to_gdf([])
     try:
-        gdf = _read_vector_gdf(path, layer=None)
+        gdf = _read_vector_gdf(path, layer=layer)
     except Exception:
         return _features_to_gdf([])
     if gdf.empty:
@@ -357,19 +395,25 @@ def _load_existing_polygon_output(path: str):
 def _split_points_by_existing_coverage(
     points: List[Tuple[float, float]],
     polygon_gdf,
+    radius: float,
+    min_ratio: float,
+    gap_min_area: float,
 ) -> Tuple[List[Tuple[float, float]], int]:
     if not points or polygon_gdf is None or polygon_gdf.empty:
         return points, 0
-    try:
-        import geopandas as gpd
-    except ImportError as exc:
-        raise ImportError("Coverage pre-check requires geopandas.") from exc
 
-    pts_gdf = _points_to_gdf(points)
-    if pts_gdf.crs and polygon_gdf.crs and str(pts_gdf.crs) != str(polygon_gdf.crs):
-        pts_gdf = pts_gdf.to_crs(polygon_gdf.crs)
-    joined = gpd.sjoin(pts_gdf[["_point_idx", "geometry"]], polygon_gdf[["geometry"]], how="left", predicate="intersects")
-    covered_idx = set(joined.loc[joined["index_right"].notna(), "_point_idx"].astype(int).tolist())
+    buffer_gdf = _points_to_buffer_gdf(points, radius)
+    covered_gdf = _annotate_wfs_area_coverage(
+        check_gdf=buffer_gdf,
+        polygon_gdf=polygon_gdf,
+        min_ratio=min_ratio,
+        gap_min_area=gap_min_area,
+    )
+    covered_idx = set(
+        covered_gdf.loc[~covered_gdf["_coverage_missing"], "_point_idx"]
+        .astype(int)
+        .tolist()
+    )
     pending = [pt for i, pt in enumerate(points) if i not in covered_idx]
     return pending, len(covered_idx)
 
@@ -733,7 +777,7 @@ def _download_wfs_by_windows(
 
             checkpoint["completed_windows"] = sorted(completed_windows)
             checkpoint["current_window_idx"] = window_idx
-            checkpoint["next_start_index"] = start_index + page_size
+            checkpoint["next_start_index"] = start_index + page_features_count
             checkpoint["downloaded_count"] = downloaded_count
             checkpoint["completed"] = False
             pages_since_checkpoint += 1
@@ -756,7 +800,7 @@ def _download_wfs_by_windows(
                 pages_since_checkpoint = 0
                 break
 
-            start_index += page_size
+            start_index += page_features_count
             time.sleep(0.12)
         else:
             _save_checkpoint(checkpoint_path, _update_checkpoint_timestamp(checkpoint))
@@ -881,28 +925,159 @@ def _read_coverage_gdf(input_path: str, layer: Optional[str]):
 
 
 def _select_checkable_features(gdf):
-    geom_type = gdf.geometry.geom_type.str.upper()
+    geom_type = gdf.geometry.geom_type.fillna("").str.upper()
     mask = gdf.geometry.notna() & geom_type.isin(["POINT", "MULTIPOINT", "POLYGON", "MULTIPOLYGON"])
     return gdf.loc[mask].copy()
 
 
-def _find_missing_intersections(check_gdf, polygon_gdf):
+def _prepare_coverage_check_gdf(gdf, point_buffer_radius: float):
+    check_gdf = _select_checkable_features(gdf)
+    if check_gdf.empty:
+        return check_gdf
+
+    if check_gdf.crs is None:
+        check_gdf = check_gdf.set_crs("EPSG:27700")
+
+    geom_type = check_gdf.geometry.geom_type.fillna("")
+    check_gdf["_coverage_source_geom"] = geom_type
+    check_gdf["_coverage_buffer_radius_m"] = None
+
+    point_mask = geom_type.str.upper().isin(["POINT", "MULTIPOINT"])
+    if point_mask.any():
+        check_gdf.loc[point_mask, check_gdf.geometry.name] = (
+            check_gdf.loc[point_mask].geometry.buffer(point_buffer_radius)
+        )
+        check_gdf.loc[point_mask, "_coverage_buffer_radius_m"] = point_buffer_radius
+
+    return check_gdf
+
+
+def _clean_area_geometry(geom):
+    if geom is None or geom.is_empty:
+        return None
     try:
-        import geopandas as gpd
+        if not geom.is_valid:
+            geom = geom.buffer(0)
+    except Exception:
+        return None
+    if geom is None or geom.is_empty:
+        return None
+    return geom
+
+
+def _annotate_wfs_area_coverage(
+    check_gdf,
+    polygon_gdf,
+    min_ratio: float,
+    gap_min_area: float,
+):
+    try:
+        from shapely.ops import unary_union
     except ImportError as exc:
-        raise ImportError("Coverage check requires geopandas. Install with: pip install geopandas") from exc
+        raise ImportError("Coverage check requires shapely. Install with: pip install shapely") from exc
 
     if check_gdf.empty:
         return check_gdf
-    if polygon_gdf.empty:
-        return check_gdf
+    if not (0.0 < float(min_ratio) <= 1.0):
+        raise ValueError("coverage-min-ratio must be > 0 and <= 1")
+    if float(gap_min_area) < 0.0:
+        raise ValueError("coverage-gap-min-area must be >= 0")
 
-    if check_gdf.crs and polygon_gdf.crs and check_gdf.crs != polygon_gdf.crs:
-        check_gdf = check_gdf.to_crs(polygon_gdf.crs)
+    annotated = check_gdf.copy()
+    if annotated.crs is None:
+        annotated = annotated.set_crs("EPSG:27700")
 
-    joined = gpd.sjoin(check_gdf[["geometry"]], polygon_gdf[["geometry"]], how="left", predicate="intersects")
-    missing_idx = joined.index[joined["index_right"].isna()].unique()
-    return check_gdf.loc[missing_idx].copy()
+    target_geoms = [_clean_area_geometry(geom) for geom in annotated.geometry]
+    target_areas = [float(geom.area) if geom is not None else 0.0 for geom in target_geoms]
+
+    covered_areas = [0.0 for _ in target_geoms]
+    if polygon_gdf is not None and not polygon_gdf.empty:
+        polygons = polygon_gdf.loc[polygon_gdf.geometry.notna()].copy()
+        polygons = polygons.loc[~polygons.geometry.is_empty].copy()
+        if annotated.crs and polygons.crs and annotated.crs != polygons.crs:
+            polygons = polygons.to_crs(annotated.crs)
+        elif polygons.crs is None and annotated.crs is not None:
+            polygons = polygons.set_crs(annotated.crs)
+
+        if not polygons.empty:
+            sindex = polygons.sindex
+            poly_geoms = list(polygons.geometry)
+            total = len(target_geoms)
+            for pos, target in enumerate(target_geoms):
+                if target is None or target_areas[pos] <= 0.0:
+                    continue
+                try:
+                    candidate_positions = list(sindex.query(target, predicate="intersects"))
+                except TypeError:
+                    candidate_positions = list(sindex.query(target))
+
+                candidates = []
+                for candidate_pos in candidate_positions:
+                    candidate = _clean_area_geometry(poly_geoms[int(candidate_pos)])
+                    if candidate is None:
+                        continue
+                    try:
+                        if candidate.intersects(target):
+                            candidates.append(candidate)
+                    except Exception:
+                        continue
+                if not candidates:
+                    continue
+
+                try:
+                    coverage_geom = candidates[0] if len(candidates) == 1 else unary_union(candidates)
+                    covered_areas[pos] = float(coverage_geom.intersection(target).area)
+                except Exception:
+                    fixed = [_clean_area_geometry(candidate) for candidate in candidates]
+                    fixed = [candidate for candidate in fixed if candidate is not None]
+                    if fixed:
+                        try:
+                            coverage_geom = fixed[0] if len(fixed) == 1 else unary_union(fixed)
+                            covered_areas[pos] = float(coverage_geom.intersection(target).area)
+                        except Exception:
+                            covered_areas[pos] = 0.0
+
+                if total >= 5000 and (pos + 1) % 5000 == 0:
+                    print(f"Coverage area check processed {pos + 1}/{total} targets")
+
+    ratios = []
+    missing_areas = []
+    missing_flags = []
+    for target_area, covered_area in zip(target_areas, covered_areas):
+        if target_area <= 0.0:
+            ratio = 1.0
+            missing_area = 0.0
+        else:
+            covered_area = min(max(float(covered_area), 0.0), target_area)
+            ratio = covered_area / target_area
+            missing_area = max(0.0, target_area - covered_area)
+        ratios.append(ratio)
+        missing_areas.append(missing_area)
+        missing_flags.append(ratio < min_ratio and missing_area > gap_min_area)
+
+    annotated["_coverage_area"] = target_areas
+    annotated["_covered_area"] = covered_areas
+    annotated["_missing_area"] = missing_areas
+    annotated["_coverage_ratio"] = ratios
+    annotated["_coverage_missing"] = missing_flags
+    return annotated
+
+
+def _find_missing_coverage(
+    check_gdf,
+    polygon_gdf,
+    min_ratio: float,
+    gap_min_area: float,
+):
+    annotated = _annotate_wfs_area_coverage(
+        check_gdf=check_gdf,
+        polygon_gdf=polygon_gdf,
+        min_ratio=min_ratio,
+        gap_min_area=gap_min_area,
+    )
+    if annotated.empty:
+        return annotated
+    return annotated.loc[annotated["_coverage_missing"]].copy()
 
 
 def _fetch_wfs_bbox_all_pages(
@@ -914,8 +1089,8 @@ def _fetch_wfs_bbox_all_pages(
     timeout: int,
 ) -> List[Dict[str, Any]]:
     all_features: List[Dict[str, Any]] = []
+    start_index = 0
     for page in range(max_pages):
-        start_index = page * page_size
         payload = _fetch_wfs_page(
             api_key=api_key,
             type_names=type_names,
@@ -925,9 +1100,11 @@ def _fetch_wfs_bbox_all_pages(
             timeout=timeout,
         )
         page_features = payload.get("features", [])
+        returned = len(page_features)
         all_features.extend(page_features)
-        if len(page_features) < page_size:
+        if returned == 0:
             break
+        start_index += returned
         time.sleep(0.05)
     return all_features
 
@@ -969,50 +1146,105 @@ def _run_coverage_topup(
     check_gdf,
     polygon_gdf,
 ) -> Tuple[Any, Any]:
-    missing = _find_missing_intersections(check_gdf, polygon_gdf)
+    min_ratio = float(args.coverage_min_ratio)
+    gap_min_area = float(args.coverage_gap_min_area)
+    missing = _find_missing_coverage(check_gdf, polygon_gdf, min_ratio, gap_min_area)
     if missing.empty:
-        print("Coverage check: no missing intersections before top-up.")
+        print(
+            "Coverage check: all targets meet WFS area coverage "
+            f"(min_ratio={min_ratio:.4f}, gap_min_area={gap_min_area:.2f} sqm)."
+        )
         return polygon_gdf, missing
 
-    print(f"Coverage check: initial missing intersections = {len(missing)}")
+    print(
+        f"Coverage check: initial under-covered targets = {len(missing)} "
+        f"(min_ratio={min_ratio:.4f}, gap_min_area={gap_min_area:.2f} sqm)"
+    )
     if args.disable_coverage_topup:
         print("Coverage top-up disabled by --disable-coverage-topup.")
         return polygon_gdf, missing
 
     for round_idx in range(1, max(args.coverage_topup_rounds, 0) + 1):
-        boxes = _build_topup_boxes(
-            missing_gdf=missing,
-            cell_size=args.coverage_topup_cell_size,
-            expand_m=args.coverage_topup_expand,
-        )
-        if not boxes:
-            print(f"Coverage top-up round {round_idx}: no request boxes generated.")
+        try:
+            from shapely.ops import unary_union
+        except ImportError as exc:
+            raise ImportError("Coverage top-up requires shapely. Install with: pip install shapely") from exc
+
+        missing_parts = [
+            geom for geom in (_clean_area_geometry(geom) for geom in missing.geometry)
+            if geom is not None
+        ]
+        if not missing_parts:
+            print(f"Coverage top-up round {round_idx}: no missing buffer geometry generated.")
             break
+
+        missing_mask_geom = unary_union(missing_parts)
+        if missing_mask_geom is None or missing_mask_geom.is_empty:
+            print(f"Coverage top-up round {round_idx}: merged missing buffer is empty.")
+            break
+
+        minx, miny, maxx, maxy = missing_mask_geom.bounds
+        expand_m = float(args.coverage_topup_expand)
+        merged_bbox = (minx - expand_m, miny - expand_m, maxx + expand_m, maxy + expand_m)
+        windows = _window_grid(merged_bbox, args.window_size, args.window_overlap)
+        topup_signature = _build_input_signature(
+            input_path=f"{args.input}#coverage-topup-round-{round_idx}",
+            x_col=args.x_col,
+            y_col=args.y_col,
+            radius=float(args.coverage_buffer_radius or args.radius),
+            type_names=args.type_names,
+            page_size=args.coverage_topup_page_size,
+            window_size=args.window_size,
+            window_overlap=args.window_overlap,
+            bbox=merged_bbox,
+            point_count=len(missing),
+        )
+        topup_resume_dir = os.path.join(
+            args.resume_dir,
+            "coverage_topup",
+            f"round_{round_idx}_{topup_signature[:10]}",
+        )
+        pages_dir = os.path.join(topup_resume_dir, "raw_pages")
+        checkpoint_path = os.path.join(topup_resume_dir, "checkpoint.json")
 
         print(
             f"Coverage top-up round {round_idx}: "
-            f"missing={len(missing)} request_boxes={len(boxes)}"
+            f"missing={len(missing)} merged_bbox="
+            f"({merged_bbox[0]:.2f}, {merged_bbox[1]:.2f}, {merged_bbox[2]:.2f}, {merged_bbox[3]:.2f}) "
+            f"windows={len(windows)}"
         )
 
-        new_features: List[Dict[str, Any]] = []
-        for box_idx, bbox in enumerate(boxes, start=1):
-            fetched = _fetch_wfs_bbox_all_pages(
-                api_key=args.api_key,
-                type_names=args.type_names,
-                bbox=bbox,
-                page_size=args.coverage_topup_page_size,
-                max_pages=args.coverage_topup_max_pages,
-                timeout=args.timeout,
+        complete = _download_wfs_by_windows(
+            api_key=args.api_key,
+            type_names=args.type_names,
+            windows=windows,
+            mask_geom=missing_mask_geom,
+            page_size=args.coverage_topup_page_size,
+            max_pages=args.coverage_topup_max_pages,
+            timeout=args.timeout,
+            pages_dir=pages_dir,
+            checkpoint_path=checkpoint_path,
+            input_signature=topup_signature,
+            checkpoint_every_pages=args.checkpoint_every_pages,
+        )
+        if not complete:
+            raise RuntimeError(
+                "Coverage top-up download not complete (hit max-pages on at least one window). "
+                "Rerun to continue resume, or increase --coverage-topup-max-pages."
             )
-            new_features.extend(fetched)
-            if box_idx % 25 == 0 or box_idx == len(boxes):
-                print(
-                    f"  Top-up boxes processed {box_idx}/{len(boxes)}; "
-                    f"fetched_raw={len(new_features)}"
-                )
 
+        new_features = _load_page_features(pages_dir)
         if not new_features:
             print(f"Coverage top-up round {round_idx}: no new features fetched.")
+            break
+
+        before_filter = len(new_features)
+        new_features = _filter_intersecting_polygons(new_features, missing_mask_geom)
+        print(
+            f"Coverage top-up round {round_idx}: "
+            f"kept {len(new_features)}/{before_filter} fetched features intersecting merged missing buffers"
+        )
+        if not new_features:
             break
 
         new_gdf = _features_to_gdf(new_features)
@@ -1021,10 +1253,10 @@ def _run_coverage_topup(
             _features_to_gdf(_gdf_to_features(polygon_gdf) + _gdf_to_features(new_gdf))
         )
         added = max(0, len(polygon_gdf) - before)
-        missing = _find_missing_intersections(check_gdf, polygon_gdf)
+        missing = _find_missing_coverage(check_gdf, polygon_gdf, min_ratio, gap_min_area)
         print(
             f"Coverage top-up round {round_idx}: added={added} "
-            f"total_polygons={len(polygon_gdf)} remaining_missing={len(missing)}"
+            f"total_polygons={len(polygon_gdf)} remaining_undercovered={len(missing)}"
         )
         if missing.empty:
             break
@@ -1051,27 +1283,42 @@ def main() -> None:
         print(f"Resolved --input: {args.input} -> {resolved_input}")
     args.input = resolved_input
 
-    inferred_output_dir = _infer_council_base_map_dir(args.input)
+    inferred_output_dir = args.output_dir or _infer_council_base_map_dir(args.input)
     council_slug = _infer_council_slug(args.input)
-    arg_set = set(sys.argv[1:])
-    if "--resume-dir" not in arg_set:
+    if not hasattr(args, "coverage_min_ratio"):
+        args.coverage_min_ratio = 0.995
+    if not hasattr(args, "coverage_gap_min_area"):
+        args.coverage_gap_min_area = 1.0
+    coverage_radius = _coverage_buffer_radius(args)
+    if not args.resume_dir:
         args.resume_dir = f"{inferred_output_dir}/resume"
-    if "--buffers-output" not in arg_set:
+    if not args.buffers_output:
         args.buffers_output = f"{inferred_output_dir}/{council_slug}_50m_buffers_merged.gpkg"
-    if "--polygons-output" not in arg_set:
+    if not args.polygons_output:
         args.polygons_output = f"{inferred_output_dir}/{council_slug}_polygons_in_buffers.gpkg"
-    if "--coverage-missing-output" not in arg_set:
+    if not args.coverage_missing_output:
         args.coverage_missing_output = f"{inferred_output_dir}/{council_slug}_missing_after_topup.gpkg"
 
     all_points = _read_points(args.input, args.x_col, args.y_col)
     print(f"Valid input points: {len(all_points)}")
 
-    existing_polygon_gdf = _load_existing_polygon_output(args.polygons_output)
+    existing_polygons_input = getattr(args, "existing_polygons_input", None) or args.polygons_output
+    existing_polygons_layer = getattr(args, "existing_polygons_layer", None)
+    existing_polygon_gdf = _load_existing_polygon_output(existing_polygons_input, layer=existing_polygons_layer)
     if existing_polygon_gdf is not None and not existing_polygon_gdf.empty:
-        print(f"Existing polygons output detected: {args.polygons_output} ({len(existing_polygon_gdf)} features)")
-    pending_points, skipped_covered = _split_points_by_existing_coverage(all_points, existing_polygon_gdf)
+        print(f"Existing polygons detected: {existing_polygons_input} ({len(existing_polygon_gdf)} features)")
+    pending_points, skipped_covered = _split_points_by_existing_coverage(
+        points=all_points,
+        polygon_gdf=existing_polygon_gdf,
+        radius=coverage_radius,
+        min_ratio=float(args.coverage_min_ratio),
+        gap_min_area=float(args.coverage_gap_min_area),
+    )
     if skipped_covered > 0:
-        print(f"Pre-check covered points skipped: {skipped_covered}")
+        print(
+            f"Pre-check fully covered point buffers skipped: {skipped_covered} "
+            f"(radius={coverage_radius}m, min_ratio={float(args.coverage_min_ratio):.4f})"
+        )
     print(f"Pending points for new WFS fetch: {len(pending_points)}")
 
     polygon_gdf = existing_polygon_gdf
@@ -1096,7 +1343,7 @@ def main() -> None:
         _write_features(args.buffers_output, buffer_features, gpkg_layer="merged_buffers")
         print(f"Saved merged buffers: {args.buffers_output}")
 
-        resume_dir = args.resume_dir or f"{DEFAULT_OUTPUT_DIR}/resume"
+        resume_dir = args.resume_dir
         pages_dir = os.path.join(resume_dir, "raw_pages")
         checkpoint_path = os.path.join(resume_dir, "checkpoint.json")
         input_signature = _build_input_signature(
@@ -1166,20 +1413,20 @@ def main() -> None:
 
     if coverage_source:
         coverage_gdf = _read_coverage_gdf(coverage_source, args.coverage_layer)
-        check_gdf = _select_checkable_features(coverage_gdf)
+        check_gdf = _prepare_coverage_check_gdf(coverage_gdf, coverage_radius)
         print(
-            f"Coverage check target features: {len(check_gdf)} "
-            f"(from {coverage_source})"
+            f"Coverage check target buffers/polygons: {len(check_gdf)} "
+            f"(from {coverage_source}; point_buffer_radius={coverage_radius}m)"
         )
         polygon_gdf, missing_gdf = _run_coverage_topup(args, check_gdf, polygon_gdf)
         missing_features = _gdf_to_features(missing_gdf)
         _write_features(args.coverage_missing_output, missing_features, gpkg_layer="missing_after_topup")
         print(f"Coverage missing features saved: {args.coverage_missing_output} ({len(missing_features)})")
     else:
-        check_gdf = _points_to_gdf(all_points)
+        check_gdf = _points_to_buffer_gdf(all_points, coverage_radius)
         print(
-            f"Coverage check target features: {len(check_gdf)} "
-            "(from input points)"
+            f"Coverage check target point buffers: {len(check_gdf)} "
+            f"(from input points; radius={coverage_radius}m)"
         )
         polygon_gdf, missing_gdf = _run_coverage_topup(args, check_gdf, polygon_gdf)
         missing_features = _gdf_to_features(missing_gdf)

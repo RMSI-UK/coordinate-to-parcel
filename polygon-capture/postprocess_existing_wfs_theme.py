@@ -9,39 +9,52 @@ import pandas as pd
 from shapely.geometry import Polygon
 from shapely.ops import unary_union
 
+from _core.config import add_config_argument, get_config_section_from_argv, require_configured
 from _core.io import load_layer
 from _core.wfs_merge import filter_wfs_theme_features, resolve_theme_field
 
 
 def parse_args() -> argparse.Namespace:
+    config_defaults, _ = get_config_section_from_argv(
+        "postprocess_existing_wfs_theme",
+        include_package_defaults=True,
+    )
     parser = argparse.ArgumentParser(
         description=(
             "Post-process an existing capture output so retained/replacement polygons "
             "are constrained to WFS Theme building/land features."
-        )
+        ),
+        argument_default=argparse.SUPPRESS,
     )
-    parser.add_argument("--input-gpkg", required=True, help="Existing capture output GPKG.")
-    parser.add_argument("--input-layer", default=None, help="Existing capture layer. Defaults to first layer.")
-    parser.add_argument("--point-gpkg", required=True, help="Original point GPKG used as fallback anchor.")
-    parser.add_argument("--point-layer", default=None, help="Original point layer. Defaults to first layer.")
-    parser.add_argument("--os-wfs-gpkg", required=True, help="Raw OS WFS polygon GPKG.")
-    parser.add_argument("--os-wfs-merge-gpkg", required=True, help="Merged OS WFS polygon GPKG.")
-    parser.add_argument("--output-gpkg", required=True, help="Post-processed output GPKG.")
-    parser.add_argument("--output-layer", default="capture_result", help="Output layer name.")
-    parser.add_argument("--wfs-theme-include", default="building,land", help="Comma-separated Theme substrings.")
-    parser.add_argument("--min-current-wfs-coverage", type=float, default=0.98)
-    parser.add_argument("--nearest-wfs-max-distance", type=float, default=30.0)
+    add_config_argument(parser)
+    parser.add_argument("--input-gpkg", help="Existing capture output GPKG.")
+    parser.add_argument("--input-layer", help="Existing capture layer. Defaults to first layer.")
+    parser.add_argument("--point-gpkg", help="Original point GPKG used as fallback anchor.")
+    parser.add_argument("--point-layer", help="Original point layer. Defaults to first layer.")
+    parser.add_argument("--os-wfs-gpkg", help="Raw OS WFS polygon GPKG.")
+    parser.add_argument("--os-wfs-merge-gpkg", help="Merged OS WFS polygon GPKG.")
+    parser.add_argument("--output-gpkg", help="Post-processed output GPKG.")
+    parser.add_argument("--output-layer", help="Output layer name.")
+    parser.add_argument("--wfs-theme-include", help="Comma-separated Theme substrings.")
+    parser.add_argument("--min-current-wfs-coverage", type=float)
+    parser.add_argument("--nearest-wfs-max-distance", type=float)
     parser.add_argument(
         "--road-point-nearest-wfs-max-distance",
         type=float,
-        default=5.0,
         help="Stricter replacement distance when the point is on a non-building/land WFS feature.",
     )
-    parser.add_argument("--fallback-min-area", type=float, default=20.0)
-    parser.add_argument("--fallback-max-aspect-ratio", type=float, default=20.0)
-    parser.add_argument("--fallback-min-compactness", type=float, default=0.025)
-    parser.add_argument("--quiet", action="store_true")
-    return parser.parse_args()
+    parser.add_argument("--fallback-min-area", type=float)
+    parser.add_argument("--fallback-max-aspect-ratio", type=float)
+    parser.add_argument("--fallback-min-compactness", type=float)
+    parser.add_argument("--quiet", action=argparse.BooleanOptionalAction)
+    parser.set_defaults(**config_defaults)
+    args = parser.parse_args()
+    require_configured(
+        args,
+        ("input_gpkg", "point_gpkg", "os_wfs_gpkg", "os_wfs_merge_gpkg", "output_gpkg"),
+        "postprocess_existing_wfs_theme",
+    )
+    return args
 
 
 def _parse_terms(value: str) -> tuple[str, ...]:
