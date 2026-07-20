@@ -14,8 +14,8 @@
     "keys_file": "/path/to/local_keys.md",
     "output_dir": "/path/to/base-map",
     "coverage_layer": "features",
-    "radius": 20.0,
-    "coverage_buffer_radius": 20.0,
+    "radius": 100.0,
+    "coverage_buffer_radius": 100.0,
     "coverage_min_ratio": 0.995,
     "coverage_gap_min_area": 1.0
   },

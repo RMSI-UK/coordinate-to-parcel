@@ -12,7 +12,7 @@ import pandas as pd
 import shapely
 
 
-DEFAULT_WFS_GPKG = "/data/sheffield/spatial/base-map/sheffield_wp5_wfs_polygons.gpkg"
+DEFAULT_WFS_GPKG = "/data/sheffield/spatial/base-map/sheffield_wfs_raw.gpkg"
 DEFAULT_WFS_LAYER = "polygons_in_buffers"
 DEFAULT_MERGE_GPKG = "/data/sheffield/spatial/base-map/sheffield_wp5_os_wfs_merge.gpkg"
 DEFAULT_MERGE_LAYER = "os_wfs_merge"

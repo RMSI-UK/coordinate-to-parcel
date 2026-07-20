@@ -14,25 +14,88 @@ Training and modeling code lives here:
 wfs_merge_native_train/
 ```
 
-Current training scripts:
+Council land, manual labels, and previous outputs may be used here to create
+labels and evaluation slices. Runtime feature columns should remain derivable
+from raw WFS + UPRN so the production pipeline can run without council land.
+
+Current raw-anchor model scripts:
 
 ```text
-prepare_wfs_merge_training_dataset.py
-train_wfs_merge_edge_model.py
-train_wfs_merge_completion_model.py
-train_wfs_merge_prune_model.py
-train_wfs_merge_anchor_group_repair_model.py
-prepare_point_large_parcel_training_dataset.py
-train_point_large_parcel_model.py
+preprocess_wfs_raw.py
+build_wfs_raw_merged_council_train.py
+train_wfs_raw_anchor_candidate_proposal_model.py
+train_wfs_raw_anchor_group_model.py
+score_wfs_raw_anchor_group_candidates.py
+simulate_wfs_raw_anchor_candidate_budget.py
+evaluate_wfs_raw_anchor_group_apply.py
+audit_wfs_raw_anchor_group_splits.py
+verify_wfs_raw_anchor_group_model.py
+estimate_wfs_raw_anchor_runtime.py
+verify_wfs_raw_anchor_workflow.py
 ```
 
 The production pipeline imports a few feature functions from this folder so that training and inference use the same feature definitions. The runnable production entrypoint remains:
 
 ```bash
-/env/venv/textual/bin/python wfs_merge_native/run_pipeline.py
+/env/venv/textual/bin/python wfs_merge_native/run_raw_anchor_group_pipeline.py --bbox minx,miny,maxx,maxy
 ```
 
-The old parcel-completion training branch is not part of the current production workflow. The current production under-merge fix is the anchor need gate plus anchor group repair model.
+The old parcel-completion training branch is not part of the current model-first production workflow. The current production path is one candidate proposal model plus one anchor group scorer and a deterministic conflict selector.
+
+Current model status, heldout precision/recall, and bbox speed evidence live in:
+
+```text
+ANCHOR_GROUP_MODEL_STATUS.md
+```
+
+Run the current 95/95 gate with:
+
+```bash
+/env/venv/textual/bin/python wfs_merge_native_train/verify_wfs_raw_anchor_group_model.py
+```
+
+Audit train/heldout target-id disjointness with:
+
+```bash
+/env/venv/textual/bin/python wfs_merge_native_train/audit_wfs_raw_anchor_group_splits.py
+```
+
+Verify the production workflow evidence chain with:
+
+```bash
+/env/venv/textual/bin/python wfs_merge_native_train/verify_wfs_raw_anchor_workflow.py
+```
+
+Estimate apply-only full clean-WFS runtime from the current bbox speed evidence
+with:
+
+```bash
+/env/venv/textual/bin/python wfs_merge_native_train/estimate_wfs_raw_anchor_runtime.py
+```
+
+## Raw WFS Preprocess
+
+`preprocess_wfs_raw.py` prepares the clean WFS base map used by training and
+QA experiments. It reads raw WFS polygons, keeps building/land/small-road
+themes, removes coarse vehicle-road polygons, de-overlaps the coverage, and
+fills polygon-internal holes plus enclosed coverage gaps.
+
+Default output:
+
+```text
+/data/sheffield/spatial/base-map/sheffield_wfs_raw_clean.gpkg
+```
+
+Smoke example:
+
+```bash
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 \
+/env/venv/textual/bin/python wfs_merge_native_train/preprocess_wfs_raw.py \
+  --max-features 5000 \
+  --validate-overlaps \
+  --overwrite \
+  --output-gpkg /data/sheffield/spatial/base-map/tmp/wfs_merge_native_train_preprocess_smoke/sheffield_wfs_raw_clean_smoke.gpkg
+```
 
 ## Point Large Parcel Prototype
 

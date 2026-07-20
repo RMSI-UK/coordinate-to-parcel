@@ -294,7 +294,10 @@ def _component_tables(
         source_ids = set(group["source_fid"].astype(int))
         geom = shapely.union_all(group.geometry.array)
         shape = _shape_metrics(geom)
-        refs = sorted({int(v) for v in group["reference_merge_fid"].dropna().astype(int)})
+        if "reference_merge_fid" in group.columns:
+            refs = sorted({int(v) for v in group["reference_merge_fid"].dropna().astype(int)})
+        else:
+            refs = []
         comp_sources[int(comp_id)] = source_ids
         comp_geom[int(comp_id)] = geom
         rec = {
@@ -319,12 +322,16 @@ def _build_completion_candidates(
     sources: gpd.GeoDataFrame,
     min_edge_proba: float,
     max_candidate_area: float,
+    require_component_reference: bool = True,
 ) -> pd.DataFrame:
     component_df, comp_sources, comp_geom, component_shape = _component_tables(predicted, sources)
     comp_lookup = component_df.set_index("component_id").to_dict("index")
 
     source_to_component = dict(zip(sources["source_fid"].astype(int), sources["pred_component_id"].astype(int)))
-    source_to_ref = dict(zip(sources["source_fid"].astype(int), sources["reference_merge_fid"]))
+    if "reference_merge_fid" in sources.columns:
+        source_to_ref = dict(zip(sources["source_fid"].astype(int), sources["reference_merge_fid"]))
+    else:
+        source_to_ref = {}
     source_geom = dict(zip(sources["source_fid"].astype(int), sources.geometry))
     source_attrs = sources.set_index(sources["source_fid"].astype(int))
 
@@ -351,7 +358,7 @@ def _build_completion_candidates(
                 continue
             if int(comp["component_uprn_count"]) != 1 or int(cand["component_uprn_count"]) != 0:
                 continue
-            if int(comp["component_reference_merge_fid_count"]) != 1:
+            if bool(require_component_reference) and int(comp["component_reference_merge_fid_count"]) != 1:
                 continue
             cand_area = float(source_geom[cand_source].area)
             if cand_area > float(max_candidate_area):
@@ -368,7 +375,8 @@ def _build_completion_candidates(
             after = _shape_metrics(after_geom)
             candidate_attr = source_attrs.loc[int(cand_source)]
             cand_ref = source_to_ref.get(int(cand_source))
-            label = int(pd.notna(cand_ref) and int(cand_ref) == int(comp["component_reference_merge_fid"]))
+            comp_ref = comp.get("component_reference_merge_fid", np.nan)
+            label = int(pd.notna(cand_ref) and pd.notna(comp_ref) and int(cand_ref) == int(comp_ref))
             centroid = shapely.centroid(comp_geom[int(comp_id)])
             shared_edge_len = float(row["shared_edge_len"])
             rec = {
@@ -376,7 +384,7 @@ def _build_completion_candidates(
                 "candidate_component_id": int(cand_comp_id),
                 "component_source_fid": int(comp_source),
                 "candidate_source_fid": int(cand_source),
-                "component_reference_merge_fid": int(comp["component_reference_merge_fid"]),
+                "component_reference_merge_fid": int(comp_ref) if pd.notna(comp_ref) else np.nan,
                 "candidate_reference_merge_fid": int(cand_ref) if pd.notna(cand_ref) else np.nan,
                 "label": label,
                 "edge_proba": float(row["edge_proba"]),

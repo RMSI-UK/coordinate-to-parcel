@@ -16,7 +16,7 @@ from point_large_parcel_features import (
 )
 
 
-DEFAULT_WFS_GPKG = "/data/sheffield/spatial/base-map/sheffield_wp5_wfs_polygons.gpkg"
+DEFAULT_WFS_GPKG = "/data/sheffield/spatial/base-map/sheffield_wfs_raw.gpkg"
 DEFAULT_WFS_LAYER = "polygons_in_buffers"
 DEFAULT_OUTPUT_DIR = "/data/sheffield/spatial/base-map/tmp/wfs_merge_point_large_parcel_v1"
 
